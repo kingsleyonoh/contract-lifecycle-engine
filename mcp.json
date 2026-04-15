@@ -1,0 +1,62 @@
+{
+  "name": "contract-lifecycle-engine",
+  "description": "Contract obligation tracking and deadline management via AI-powered extraction",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "create_contract",
+      "description": "Create a new contract in draft status",
+      "endpoint": "POST /api/contracts"
+    },
+    {
+      "name": "list_contracts",
+      "description": "List contracts with filtering by status, counterparty, type, tags, expiration",
+      "endpoint": "GET /api/contracts"
+    },
+    {
+      "name": "activate_contract",
+      "description": "Activate a draft contract with effective and end dates",
+      "endpoint": "POST /api/contracts/{id}/activate"
+    },
+    {
+      "name": "upload_document",
+      "description": "Upload a contract document (PDF, DOCX, TXT)",
+      "endpoint": "POST /api/contracts/{id}/documents"
+    },
+    {
+      "name": "extract_obligations",
+      "description": "Trigger AI-powered obligation extraction from contract documents",
+      "endpoint": "POST /api/contracts/{id}/extract"
+    },
+    {
+      "name": "list_obligations",
+      "description": "List obligations with filtering by status, type, contract, due date",
+      "endpoint": "GET /api/obligations"
+    },
+    {
+      "name": "confirm_obligation",
+      "description": "Confirm an AI-extracted obligation (pending -> active)",
+      "endpoint": "POST /api/obligations/{id}/confirm"
+    },
+    {
+      "name": "fulfill_obligation",
+      "description": "Mark an obligation as fulfilled",
+      "endpoint": "POST /api/obligations/{id}/fulfill"
+    },
+    {
+      "name": "list_alerts",
+      "description": "List deadline alerts with filtering",
+      "endpoint": "GET /api/alerts"
+    },
+    {
+      "name": "get_dashboard",
+      "description": "Get analytics dashboard with active contracts, overdue counts, upcoming deadlines",
+      "endpoint": "GET /api/analytics/dashboard"
+    },
+    {
+      "name": "get_deadline_calendar",
+      "description": "Get obligations with deadlines in a date range",
+      "endpoint": "GET /api/analytics/deadline-calendar"
+    }
+  ]
+}

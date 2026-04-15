@@ -1,0 +1,66 @@
+# Contract Lifecycle Engine
+
+> Contract obligation tracking and deadline management via AI-powered extraction.
+
+## What This Does
+
+The Contract Lifecycle Engine ingests business contracts, extracts legally binding obligations using AI analysis (via the Multi-Agent RAG Platform), and proactively tracks deadlines to prevent costly auto-renewals, missed payment windows, and compliance breaches. It serves mid-market companies managing 200-500+ active contracts.
+
+This is a headless REST API system — no frontend UI. All interaction via API or ecosystem event flow.
+
+## Who It's For
+
+- Legal operations teams at mid-market companies ($10M-$100M revenue)
+- COOs and General Counsels managing vendor/customer contracts
+- AI agents consuming the API for contract intelligence
+
+## Tech Stack
+
+- C# 13 / .NET 9 with ASP.NET Core 9 Minimal APIs
+- Entity Framework Core 9 with PostgreSQL 16
+- Quartz.NET for scheduled background jobs
+- NATS JetStream for event publishing
+- Docker on Hetzner VPS
+
+## Repository
+
+https://github.com/kingsleyonoh/contract-lifecycle-engine
+
+## Getting Started
+
+```bash
+git clone https://github.com/kingsleyonoh/contract-lifecycle-engine.git
+cd contract-lifecycle-engine
+cp .env.example .env
+docker compose up -d db
+dotnet ef database update --project src/ContractEngine.Infrastructure --startup-project src/ContractEngine.Api
+dotnet run --project src/ContractEngine.Api -- --seed
+```
+
+## API Surface
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /api/tenants/register | Register a new tenant |
+| GET | /api/tenants/me | Get current tenant info |
+| POST | /api/contracts | Create a contract |
+| GET | /api/contracts | List contracts (filtered) |
+| POST | /api/contracts/{id}/activate | Activate a draft contract |
+| POST | /api/contracts/{id}/documents | Upload contract document |
+| POST | /api/contracts/{id}/extract | Trigger AI obligation extraction |
+| GET | /api/obligations | List obligations (filtered) |
+| POST | /api/obligations/{id}/confirm | Confirm extracted obligation |
+| POST | /api/obligations/{id}/fulfill | Mark obligation fulfilled |
+| GET | /api/alerts | List deadline alerts |
+| GET | /api/analytics/dashboard | Dashboard metrics |
+| GET | /health | Health check |
+
+## Ecosystem Integrations
+
+All integrations are feature-flagged and optional:
+- **RAG Platform** — AI-powered obligation extraction and semantic contract diff
+- **Notification Hub** — Email/Telegram deadline alerts
+- **Webhook Engine** — DocuSign/PandaDoc signed contract ingestion
+- **Workflow Engine** — Contract amendment approval workflows
+- **Compliance Ledger** — NATS events for regulatory audit trail
+- **Invoice Recon** — Auto-create purchase orders from payment obligations

@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: Contract Lifecycle Engine
+  description: Contract obligation tracking and deadline management via AI-powered extraction
+  version: 1.0.0
+  contact:
+    name: Kingsley Onoh
+    url: https://kingsleyonoh.com
+
+servers:
+  - url: https://contracts.kingsleyonoh.com
+    description: Production
+  - url: http://localhost:5000
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+paths:
+  /api/tenants/register:
+    post:
+      summary: Register a new tenant
+      tags: [Tenants]
+      security: []
+      # TODO: define request/response schema
+
+  /api/tenants/me:
+    get:
+      summary: Get current tenant info
+      tags: [Tenants]
+      # TODO: define response schema
+    patch:
+      summary: Update tenant settings
+      tags: [Tenants]
+      # TODO: define request/response schema
+
+  /api/counterparties:
+    post:
+      summary: Create a counterparty
+      tags: [Counterparties]
+      # TODO: define schema
+    get:
+      summary: List counterparties
+      tags: [Counterparties]
+      # TODO: define schema
+
+  /api/counterparties/{id}:
+    get:
+      summary: Get counterparty detail
+      tags: [Counterparties]
+      # TODO: define schema
+    patch:
+      summary: Update counterparty
+      tags: [Counterparties]
+      # TODO: define schema
+
+  /api/contracts:
+    post:
+      summary: Create a contract
+      tags: [Contracts]
+      # TODO: define schema
+    get:
+      summary: List contracts (filtered, paginated)
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}:
+    get:
+      summary: Get contract detail
+      tags: [Contracts]
+      # TODO: define schema
+    patch:
+      summary: Update contract
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}/activate:
+    post:
+      summary: Activate a draft contract
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}/terminate:
+    post:
+      summary: Terminate a contract
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}/archive:
+    post:
+      summary: Archive a terminal contract
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}/tags:
+    post:
+      summary: Manage contract tags
+      tags: [Contracts]
+      # TODO: define schema
+
+  /api/contracts/{id}/documents:
+    post:
+      summary: Upload contract document
+      tags: [Documents]
+      # TODO: define schema
+    get:
+      summary: List contract documents
+      tags: [Documents]
+      # TODO: define schema
+
+  /api/documents/{id}/download:
+    get:
+      summary: Download a document
+      tags: [Documents]
+      # TODO: define schema
+
+  /api/contracts/{id}/versions:
+    post:
+      summary: Create new contract version
+      tags: [Versions]
+      # TODO: define schema
+    get:
+      summary: List version history
+      tags: [Versions]
+      # TODO: define schema
+
+  /api/contracts/{id}/versions/{versionNumber}/diff:
+    get:
+      summary: Semantic diff between versions
+      tags: [Versions]
+      # TODO: define schema
+
+  /api/obligations:
+    post:
+      summary: Create manual obligation
+      tags: [Obligations]
+      # TODO: define schema
+    get:
+      summary: List obligations (filtered, paginated)
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}:
+    get:
+      summary: Get obligation detail with event timeline
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/confirm:
+    post:
+      summary: Confirm extracted obligation (pending -> active)
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/dismiss:
+    post:
+      summary: Dismiss extracted obligation (pending -> dismissed)
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/fulfill:
+    post:
+      summary: Mark obligation fulfilled
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/waive:
+    post:
+      summary: Waive obligation
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/dispute:
+    post:
+      summary: Dispute obligation
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/resolve-dispute:
+    post:
+      summary: Resolve obligation dispute
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/obligations/{id}/events:
+    get:
+      summary: Get immutable obligation event timeline
+      tags: [Obligations]
+      # TODO: define schema
+
+  /api/contracts/{id}/extract:
+    post:
+      summary: Trigger AI obligation extraction
+      tags: [Extraction]
+      # TODO: define schema
+
+  /api/extraction-jobs:
+    get:
+      summary: List extraction jobs
+      tags: [Extraction]
+      # TODO: define schema
+
+  /api/extraction-jobs/{id}:
+    get:
+      summary: Get extraction job detail
+      tags: [Extraction]
+      # TODO: define schema
+
+  /api/extraction-jobs/{id}/retry:
+    post:
+      summary: Retry failed extraction job
+      tags: [Extraction]
+      # TODO: define schema
+
+  /api/alerts:
+    get:
+      summary: List deadline alerts
+      tags: [Alerts]
+      # TODO: define schema
+
+  /api/alerts/{id}/acknowledge:
+    patch:
+      summary: Acknowledge an alert
+      tags: [Alerts]
+      # TODO: define schema
+
+  /api/alerts/acknowledge-all:
+    post:
+      summary: Bulk acknowledge alerts
+      tags: [Alerts]
+      # TODO: define schema
+
+  /api/analytics/dashboard:
+    get:
+      summary: Dashboard metrics
+      tags: [Analytics]
+      # TODO: define schema
+
+  /api/analytics/obligations-by-type:
+    get:
+      summary: Obligations grouped by type and status
+      tags: [Analytics]
+      # TODO: define schema
+
+  /api/analytics/contract-value:
+    get:
+      summary: Contract value by status and counterparty
+      tags: [Analytics]
+      # TODO: define schema
+
+  /api/analytics/deadline-calendar:
+    get:
+      summary: Deadline calendar for date range
+      tags: [Analytics]
+      # TODO: define schema
+
+  /api/webhooks/contract-signed:
+    post:
+      summary: Receive signed contract webhook (DocuSign/PandaDoc)
+      tags: [Webhooks]
+      security: []
+      # TODO: define schema
+
+  /health:
+    get:
+      summary: Basic health check
+      tags: [Health]
+      security: []
+
+  /health/db:
+    get:
+      summary: Database health check
+      tags: [Health]
+      security: []
+
+  /health/ready:
+    get:
+      summary: Readiness check with integration status
+      tags: [Health]
+      security: []
