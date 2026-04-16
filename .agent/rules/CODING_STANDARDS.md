@@ -174,8 +174,8 @@ chore(workflows): add sprint velocity to resume workflow
 - Use `dotnet` CLI for all build/test/run operations
 
 ## .NET / C# Conventions
-- **Framework:** ASP.NET Core 9 with Minimal APIs — endpoints in `Endpoints/` classes, not controllers
-- **ORM:** Entity Framework Core 9 with Npgsql — code-first migrations via `dotnet ef`
+- **Framework:** ASP.NET Core 8 with Minimal APIs — endpoints in `Endpoints/` classes, not controllers
+- **ORM:** Entity Framework Core 8 with Npgsql — code-first migrations via `dotnet ef`
 - **DI:** Built-in `Microsoft.Extensions.DependencyInjection` — register in `ServiceRegistration.cs`
 - **Dependency Hierarchy (ENFORCED):**
   ```

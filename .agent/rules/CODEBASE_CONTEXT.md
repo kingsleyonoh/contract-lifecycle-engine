@@ -7,9 +7,9 @@
 
 | Layer | Technology |
 |-------|-----------|
-| Language | C# 13 / .NET 9 |
-| Framework | ASP.NET Core 9 (Minimal APIs) |
-| ORM | Entity Framework Core 9 (Npgsql) |
+| Language | C# 12 / .NET 8 |
+| Framework | ASP.NET Core 8 (Minimal APIs) |
+| ORM | Entity Framework Core 8 (Npgsql) |
 | Database | PostgreSQL 16 |
 | Background Jobs | Quartz.NET 3.x |
 | Messaging | NATS.Client 2.x (JetStream) |
