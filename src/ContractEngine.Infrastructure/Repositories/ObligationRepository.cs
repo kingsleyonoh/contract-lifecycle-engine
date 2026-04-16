@@ -37,6 +37,17 @@ public sealed class ObligationRepository : IObligationRepository
 
     public async Task UpdateAsync(Obligation obligation, CancellationToken cancellationToken = default)
     {
+        // Detach any existing tracked entity with the same key before reattaching the caller's
+        // instance. The archive cascade (Batch 013) pulls obligations via an AsNoTracking list,
+        // but earlier calls in the same DbContext scope (e.g. a prior Confirm on the same row)
+        // may have left the parent instance tracked — EF will throw on duplicate-key attach.
+        var tracked = _db.ChangeTracker.Entries<Obligation>()
+            .FirstOrDefault(e => e.Entity.Id == obligation.Id && !ReferenceEquals(e.Entity, obligation));
+        if (tracked is not null)
+        {
+            tracked.State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+        }
+
         _db.Obligations.Update(obligation);
         await _db.SaveChangesAsync(cancellationToken);
     }

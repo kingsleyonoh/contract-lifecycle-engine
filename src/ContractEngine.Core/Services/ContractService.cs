@@ -34,17 +34,23 @@ public sealed class ContractService
     private readonly ICounterpartyRepository _counterpartyRepository;
     private readonly CounterpartyService _counterpartyService;
     private readonly ITenantContext _tenantContext;
+    private readonly ObligationService? _obligationService;
 
     public ContractService(
         IContractRepository repository,
         ICounterpartyRepository counterpartyRepository,
         CounterpartyService counterpartyService,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        ObligationService? obligationService = null)
     {
         _repository = repository;
         _counterpartyRepository = counterpartyRepository;
         _counterpartyService = counterpartyService;
         _tenantContext = tenantContext;
+        // ObligationService is optional so unit tests that predate Batch 013 (and don't care about
+        // archive cascade) can keep their four-arg constructor call-sites intact. Production DI
+        // always resolves a non-null instance.
+        _obligationService = obligationService;
     }
 
     public async Task<Contract> CreateAsync(
@@ -292,12 +298,23 @@ public sealed class ContractService
             throw InvalidTransition(existing.Status, ContractStatus.Archived);
         }
 
-        // TODO(batch-010): expire all non-terminal obligations on this contract once the
-        // Obligation entity / state machine ship (PRD §5.1 archive cascade). The contract
-        // itself archives correctly today; only the cascade is deferred.
         existing.Status = ContractStatus.Archived;
         existing.UpdatedAt = DateTime.UtcNow;
         await _repository.UpdateAsync(existing, cancellationToken);
+
+        // Archive cascade (PRD §5.1): expire every non-terminal obligation on this contract so the
+        // deadline scanner stops surfacing alerts for a dead agreement. Delegates to the obligation
+        // service so contract code stays oblivious to obligation internals (state machine, event
+        // sourcing). When run from legacy call-sites that constructed ContractService without the
+        // obligation service (tests pre-Batch 013), the cascade is a no-op.
+        if (_obligationService is not null)
+        {
+            await _obligationService.ExpireDueToContractArchiveAsync(
+                existing.Id,
+                actor: "system:archive_cascade",
+                cancellationToken);
+        }
+
         return existing;
     }
 

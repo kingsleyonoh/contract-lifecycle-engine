@@ -163,6 +163,136 @@ public class ObligationServiceIntegrationTests
         events[0].Reason.Should().Be("extractor duplicate");
     }
 
+    // --- Batch 013: recurring fulfil cascade + archive bulk-expire round-trip. ---
+    [Fact]
+    public async Task FulfillAsync_OnRecurringMonthly_SpawnsActiveFollowUpInDb()
+    {
+        var tenantId = await SeedTenantAsync();
+        var cpId = await SeedCounterpartyAsync(tenantId, $"Recur-CP-{Guid.NewGuid()}");
+        var contractId = await SeedContractAsync(tenantId, cpId);
+
+        Guid parentId;
+        using (var scope = ScopeFor(tenantId))
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ObligationService>();
+            var parent = await service.CreateAsync(new CreateObligationRequest
+            {
+                ContractId = contractId,
+                ObligationType = ObligationType.Payment,
+                Title = $"Monthly integration {Guid.NewGuid()}",
+                DeadlineDate = new DateOnly(2026, 4, 16),
+                Recurrence = ObligationRecurrence.Monthly,
+                Amount = 1500m,
+                Currency = "USD",
+            }, actor: "user:test");
+            parentId = parent.Id;
+
+            await service.ConfirmAsync(parentId, actor: "user:test");
+            var fulfilled = await service.FulfillAsync(parentId, notes: "paid via ACH", actor: "user:test");
+            fulfilled!.Status.Should().Be(ObligationStatus.Fulfilled);
+        }
+
+        using var verify = _fixture.CreateScope(services =>
+            services.AddScoped<ITenantContext, NullTenantContext>());
+        var db = verify.ServiceProvider.GetRequiredService<ContractDbContext>();
+
+        // Parent persisted as Fulfilled.
+        var parentRow = await db.Obligations.IgnoreQueryFilters().AsNoTracking()
+            .FirstAsync(o => o.Id == parentId);
+        parentRow.Status.Should().Be(ObligationStatus.Fulfilled);
+
+        // Exactly one sibling row on the same contract → Active with next_due_date + 1 month.
+        var siblings = await db.Obligations.IgnoreQueryFilters().AsNoTracking()
+            .Where(o => o.ContractId == contractId && o.Id != parentId)
+            .ToListAsync();
+        siblings.Should().HaveCount(1);
+        siblings[0].Status.Should().Be(ObligationStatus.Active);
+        siblings[0].NextDueDate.Should().Be(new DateOnly(2026, 5, 16));
+        siblings[0].Recurrence.Should().Be(ObligationRecurrence.Monthly);
+        siblings[0].Amount.Should().Be(1500m);
+
+        // Event log for the parent: confirm + fulfill. For the child: one provenance event.
+        var parentEvents = await db.ObligationEvents.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.ObligationId == parentId)
+            .OrderBy(e => e.CreatedAt)
+            .ToListAsync();
+        parentEvents.Should().HaveCount(2);
+        parentEvents[1].ToStatus.Should().Be("fulfilled");
+
+        var childEvents = await db.ObligationEvents.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.ObligationId == siblings[0].Id)
+            .ToListAsync();
+        childEvents.Should().HaveCount(1);
+        childEvents[0].ToStatus.Should().Be("active");
+        childEvents[0].Actor.Should().Be("system");
+        childEvents[0].Reason.Should().NotBeNull();
+        childEvents[0].Reason!.Should().Contain("recurring");
+    }
+
+    [Fact]
+    public async Task ExpireDueToContractArchiveAsync_ExpiresOnlyNonTerminalRows()
+    {
+        var tenantId = await SeedTenantAsync();
+        var cpId = await SeedCounterpartyAsync(tenantId, $"Bulk-CP-{Guid.NewGuid()}");
+        var contractId = await SeedContractAsync(tenantId, cpId);
+
+        Guid active1, active2, active3, fulfilled, dismissed;
+        using (var scope = ScopeFor(tenantId))
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ObligationService>();
+            active1 = (await SeedAndConfirmAsync(service, contractId)).Id;
+            active2 = (await SeedAndConfirmAsync(service, contractId)).Id;
+            active3 = (await SeedAndConfirmAsync(service, contractId)).Id;
+
+            var ff = await service.CreateAsync(CreateRequest(contractId), actor: "user:test");
+            await service.ConfirmAsync(ff.Id, actor: "user:test");
+            await service.FulfillAsync(ff.Id, notes: null, actor: "user:test");
+            fulfilled = ff.Id;
+
+            var d = await service.CreateAsync(CreateRequest(contractId), actor: "user:test");
+            await service.DismissAsync(d.Id, reason: "extractor noise", actor: "user:test");
+            dismissed = d.Id;
+
+            await service.ExpireDueToContractArchiveAsync(contractId, actor: "system:archive_cascade");
+        }
+
+        using var verify = _fixture.CreateScope(services =>
+            services.AddScoped<ITenantContext, NullTenantContext>());
+        var db = verify.ServiceProvider.GetRequiredService<ContractDbContext>();
+
+        (await db.Obligations.IgnoreQueryFilters().AsNoTracking().FirstAsync(o => o.Id == active1))
+            .Status.Should().Be(ObligationStatus.Expired);
+        (await db.Obligations.IgnoreQueryFilters().AsNoTracking().FirstAsync(o => o.Id == active2))
+            .Status.Should().Be(ObligationStatus.Expired);
+        (await db.Obligations.IgnoreQueryFilters().AsNoTracking().FirstAsync(o => o.Id == active3))
+            .Status.Should().Be(ObligationStatus.Expired);
+        (await db.Obligations.IgnoreQueryFilters().AsNoTracking().FirstAsync(o => o.Id == fulfilled))
+            .Status.Should().Be(ObligationStatus.Fulfilled);
+        (await db.Obligations.IgnoreQueryFilters().AsNoTracking().FirstAsync(o => o.Id == dismissed))
+            .Status.Should().Be(ObligationStatus.Dismissed);
+
+        // Three cascade events — one per active row.
+        var cascadeEvents = await db.ObligationEvents.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.Actor == "system:archive_cascade" && e.ToStatus == "expired")
+            .ToListAsync();
+        cascadeEvents.Count.Should().BeGreaterOrEqualTo(3);
+    }
+
+    private static CreateObligationRequest CreateRequest(Guid contractId) => new()
+    {
+        ContractId = contractId,
+        ObligationType = ObligationType.Payment,
+        Title = $"Ob {Guid.NewGuid()}",
+        DeadlineDate = new DateOnly(2026, 6, 1),
+    };
+
+    private static async Task<Obligation> SeedAndConfirmAsync(ObligationService service, Guid contractId)
+    {
+        var ob = await service.CreateAsync(CreateRequest(contractId), actor: "user:test");
+        await service.ConfirmAsync(ob.Id, actor: "user:test");
+        return ob;
+    }
+
     [Fact]
     public async Task GetByIdWithEventsAsync_ReturnsObligationAndChronologicalEvents()
     {

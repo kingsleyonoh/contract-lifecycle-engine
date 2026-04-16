@@ -12,14 +12,15 @@ using CoreCreateObligationRequest = ContractEngine.Core.Services.CreateObligatio
 namespace ContractEngine.Api.Endpoints;
 
 /// <summary>
-/// Minimal-API endpoint group for obligation CRUD and the Pending-state transitions
-/// (<c>confirm</c>, <c>dismiss</c>). Active-state transitions (fulfill / waive / dispute /
-/// resolve-dispute) and the paginated <c>/events</c> endpoint ship in Batch 013.
+/// Minimal-API endpoint group for obligation CRUD and the full state-machine transitions
+/// (<c>confirm</c>, <c>dismiss</c>, <c>fulfill</c>, <c>waive</c>, <c>dispute</c>,
+/// <c>resolve-dispute</c>) plus the paginated <c>/events</c> timeline (Batch 013).
 ///
-/// <para>Rate limits follow PRD §8b: writes at 50/min, reads at 100/min. Invalid transitions
-/// bubble as <see cref="Core.Exceptions.ObligationTransitionException"/>; the shared exception
-/// middleware maps them to <c>422 INVALID_TRANSITION</c> with the valid next states listed in
-/// the response <c>details[]</c>.</para>
+/// <para>Rate limits follow PRD §8b: writes at 50/min (confirm, dismiss, fulfill), 20/min
+/// (waive, dispute, resolve-dispute), reads at 100/min. Invalid transitions bubble as
+/// <see cref="Core.Exceptions.ObligationTransitionException"/>; the shared exception middleware
+/// maps them to <c>422 INVALID_TRANSITION</c> with the valid next states listed in the response
+/// <c>details[]</c>.</para>
 /// </summary>
 public static class ObligationEndpoints
 {
@@ -39,6 +40,26 @@ public static class ObligationEndpoints
 
         builder.MapPost("/api/obligations/{id:guid}/dismiss", DismissAsync)
             .RequireRateLimiting(RateLimitPolicies.Write50);
+
+        // Active-state transitions (Batch 013). Fulfill is write-50 (common daily action);
+        // waive / dispute / resolve-dispute are write-20 (rarer, higher-stakes moves).
+        builder.MapPost("/api/obligations/{id:guid}/fulfill", FulfillAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write50);
+
+        builder.MapPost("/api/obligations/{id:guid}/waive", WaiveAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write20);
+
+        builder.MapPost("/api/obligations/{id:guid}/dispute", DisputeAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write20);
+
+        builder.MapPost("/api/obligations/{id:guid}/resolve-dispute", ResolveDisputeAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write20);
+
+        // Paginated event timeline (Batch 013). Separate from GET /{id} which inlines the events
+        // for UI convenience — this endpoint exists so long event histories (rare but possible on
+        // long-lived recurring obligations) can be paginated without bloating the detail payload.
+        builder.MapGet("/api/obligations/{id:guid}/events", ListEventsAsync)
+            .RequireRateLimiting(RateLimitPolicies.Read100);
 
         return builder;
     }
@@ -159,6 +180,144 @@ public static class ObligationEndpoints
         return Results.Ok(MapToResponse(updated));
     }
 
+    private static async Task<IResult> FulfillAsync(
+        Guid id,
+        FulfillObligationRequest? request,
+        ObligationService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = RequireResolvedTenant(tenantContext);
+
+        var notes = string.IsNullOrWhiteSpace(request?.Notes) ? null : request!.Notes!.Trim();
+
+        var updated = await service.FulfillAsync(id, notes, ActorFor(tenantId), cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> WaiveAsync(
+        Guid id,
+        WaiveObligationRequest? request,
+        ObligationService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = RequireResolvedTenant(tenantContext);
+
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            var failure = new FluentValidation.Results.ValidationFailure(
+                "reason",
+                "reason is required to waive an obligation");
+            throw new ValidationException(new[] { failure });
+        }
+
+        var updated = await service.WaiveAsync(id, request.Reason.Trim(), ActorFor(tenantId), cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> DisputeAsync(
+        Guid id,
+        DisputeObligationRequest? request,
+        ObligationService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = RequireResolvedTenant(tenantContext);
+
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            var failure = new FluentValidation.Results.ValidationFailure(
+                "reason",
+                "reason is required to dispute an obligation");
+            throw new ValidationException(new[] { failure });
+        }
+
+        var updated = await service.DisputeAsync(id, request.Reason.Trim(), ActorFor(tenantId), cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> ResolveDisputeAsync(
+        Guid id,
+        ResolveDisputeRequest? request,
+        ObligationService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = RequireResolvedTenant(tenantContext);
+
+        if (request is null || string.IsNullOrWhiteSpace(request.Resolution))
+        {
+            var failure = new FluentValidation.Results.ValidationFailure(
+                "resolution",
+                "resolution is required; must be one of: stands, waived");
+            throw new ValidationException(new[] { failure });
+        }
+
+        if (!TryParseResolution(request.Resolution, out var resolution))
+        {
+            var failure = new FluentValidation.Results.ValidationFailure(
+                "resolution",
+                $"unknown resolution '{request.Resolution}'; must be one of: stands, waived");
+            throw new ValidationException(new[] { failure });
+        }
+
+        var notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes!.Trim();
+
+        var updated = await service.ResolveDisputeAsync(id, resolution, notes, ActorFor(tenantId), cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> ListEventsAsync(
+        Guid id,
+        ObligationService service,
+        ITenantContext tenantContext,
+        string? cursor,
+        int? page_size,
+        CancellationToken cancellationToken)
+    {
+        RequireResolvedTenant(tenantContext);
+
+        // Bounce cross-tenant / missing obligation ids with 404 BEFORE running the event query,
+        // so callers never see an empty success envelope for something they can't access.
+        var obligation = await service.GetByIdAsync(id, cancellationToken);
+        if (obligation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var pageRequest = new PageRequest
+        {
+            Cursor = cursor,
+            PageSize = page_size ?? PageRequest.DefaultPageSize,
+        };
+
+        var page = await service.ListEventsAsync(id, pageRequest, cancellationToken);
+        var mapped = page.Data.Select(MapEvent).ToList();
+        var pagedResponse = new PagedResult<ObligationEventResponse>(mapped, page.Pagination);
+        return Results.Ok(ObligationEventListResponse.FromPagedResult(pagedResponse));
+    }
+
     private static Guid RequireResolvedTenant(ITenantContext tenantContext)
     {
         if (!tenantContext.IsResolved || tenantContext.TenantId is null)
@@ -172,6 +331,22 @@ public static class ObligationEndpoints
     // per-user actors will replace this when session auth lands; the event log already has
     // the shape ("user:<id>") that will accommodate the richer identity without schema change.
     private static string ActorFor(Guid tenantId) => $"user:{tenantId}";
+
+    private static bool TryParseResolution(string raw, out DisputeResolution resolution)
+    {
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "stands":
+                resolution = DisputeResolution.Stands;
+                return true;
+            case "waived":
+                resolution = DisputeResolution.Waived;
+                return true;
+            default:
+                resolution = default;
+                return false;
+        }
+    }
 
     private static CreateObligationRequestDomain MapToDomain(CreateObligationRequestWire wire) => new()
     {

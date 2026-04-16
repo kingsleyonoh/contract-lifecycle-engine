@@ -338,6 +338,291 @@ public class ObligationEndpointsTests : IClassFixture<ObligationEndpointsTestFac
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    // --- Batch 013: fulfill / waive / dispute / resolve-dispute / events endpoints. ---
+
+    [Fact]
+    public async Task Fulfill_OnActiveOneTime_Returns200_AndListHasOneRow()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+
+        // Confirm → active.
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/fulfill", new { notes = "paid" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("fulfilled");
+
+        // Only one row for this contract — OneTime doesn't spawn a follow-up.
+        var listResp = await client.GetAsync($"/api/obligations?contract_id={contractId}");
+        using var listDoc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync());
+        listDoc.RootElement.GetProperty("data").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Fulfill_OnActiveMonthly_SpawnsFollowUpWithNextMonthDueDate()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+
+        // Create a monthly recurring obligation with known deadline_date.
+        var createResp = await client.PostAsJsonAsync("/api/obligations", new
+        {
+            contract_id = contractId,
+            obligation_type = "payment",
+            title = "Monthly license",
+            deadline_date = "2026-04-16",
+            recurrence = "monthly",
+        });
+        createResp.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var createDoc = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync());
+        var parentId = createDoc.RootElement.GetProperty("id").GetGuid();
+
+        // Confirm then fulfill.
+        (await client.PostAsJsonAsync($"/api/obligations/{parentId}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var fulfillResp = await client.PostAsJsonAsync($"/api/obligations/{parentId}/fulfill", new { });
+        fulfillResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // List should now show two obligations: the fulfilled parent + the new active child.
+        var listResp = await client.GetAsync($"/api/obligations?contract_id={contractId}");
+        using var listDoc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync());
+        var items = listDoc.RootElement.GetProperty("data").EnumerateArray().ToList();
+        items.Count.Should().Be(2);
+
+        var child = items.Single(x => x.GetProperty("id").GetGuid() != parentId);
+        child.GetProperty("status").GetString().Should().Be("active");
+        child.GetProperty("next_due_date").GetString().Should().Be("2026-05-16");
+        child.GetProperty("recurrence").GetString().Should().Be("monthly");
+    }
+
+    [Fact]
+    public async Task Fulfill_OnPending_Returns422()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/fulfill", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString()
+            .Should().Be("INVALID_TRANSITION");
+    }
+
+    [Fact]
+    public async Task Waive_WithoutReason_Returns400()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/waive", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString()
+            .Should().Be("VALIDATION_ERROR");
+    }
+
+    [Fact]
+    public async Task Waive_WithReason_Returns200_AndEventReasonMatches()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/waive", new { reason = "executive waiver" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("waived");
+
+        var detailResp = await client.GetAsync($"/api/obligations/{id}");
+        using var detailDoc = JsonDocument.Parse(await detailResp.Content.ReadAsStringAsync());
+        var events = detailDoc.RootElement.GetProperty("events");
+        events.GetArrayLength().Should().Be(2); // confirm + waive
+        events[1].GetProperty("to_status").GetString().Should().Be("waived");
+        events[1].GetProperty("reason").GetString().Should().Be("executive waiver");
+    }
+
+    [Fact]
+    public async Task Dispute_OnActive_Returns200_StatusDisputed()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/dispute", new { reason = "invoice mismatch" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("disputed");
+    }
+
+    [Fact]
+    public async Task Dispute_WithoutReason_Returns400()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/dispute", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ResolveDispute_Stands_MovesDisputedBackToActive()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/dispute", new { reason = "x" })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/resolve-dispute",
+            new { resolution = "stands" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("active");
+    }
+
+    [Fact]
+    public async Task ResolveDispute_Waived_MovesDisputedToWaived()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/dispute", new { reason = "x" })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/resolve-dispute",
+            new { resolution = "waived" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("waived");
+    }
+
+    [Fact]
+    public async Task ResolveDispute_InvalidResolution_Returns400()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/dispute", new { reason = "x" })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{id}/resolve-dispute",
+            new { resolution = "banana" });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString()
+            .Should().Be("VALIDATION_ERROR");
+    }
+
+    [Fact]
+    public async Task GetEvents_AfterMultipleTransitions_ReturnsChronologicalList()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(client, cpId);
+        var id = await CreateObligationAsync(client, contractId);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/confirm", new { })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/api/obligations/{id}/waive", new { reason = "ok" })).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.GetAsync($"/api/obligations/{id}/events");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.TryGetProperty("data", out var data).Should().BeTrue();
+        doc.RootElement.TryGetProperty("pagination", out _).Should().BeTrue();
+
+        // Two events — confirm and waive. Order is repo-default (desc by created_at) since cursor
+        // pagination runs desc. Both events must be present regardless of order.
+        data.GetArrayLength().Should().Be(2);
+        var states = data.EnumerateArray()
+            .Select(e => e.GetProperty("to_status").GetString())
+            .ToList();
+        states.Should().BeEquivalentTo(new[] { "active", "waived" });
+    }
+
+    [Fact]
+    public async Task GetEvents_ForOtherTenant_Returns404()
+    {
+        var (keyA, _) = await RegisterTenantAsync();
+        var (keyB, _) = await RegisterTenantAsync();
+        using var clientA = AuthedClient(keyA);
+        using var clientB = AuthedClient(keyB);
+
+        var cpId = await CreateCounterpartyAsync(clientA, $"CP {Guid.NewGuid()}");
+        var contractId = await CreateContractAsync(clientA, cpId);
+        var id = await CreateObligationAsync(clientA, contractId);
+
+        var resp = await clientB.GetAsync($"/api/obligations/{id}/events");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task GetEvents_WithoutAuth_Returns401()
+    {
+        using var client = _factory.CreateClient();
+        var resp = await client.GetAsync($"/api/obligations/{Guid.NewGuid()}/events");
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Fulfill_WithoutAuth_Returns401()
+    {
+        using var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{Guid.NewGuid()}/fulfill", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Waive_WithoutAuth_Returns401()
+    {
+        using var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync($"/api/obligations/{Guid.NewGuid()}/waive", new { reason = "x" });
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     private async Task<(string Key, Guid TenantId)> RegisterTenantAsync()
     {
         using var client = _factory.CreateClient();

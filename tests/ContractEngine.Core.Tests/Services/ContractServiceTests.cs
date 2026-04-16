@@ -437,4 +437,49 @@ public class ContractServiceTests
 
         await repo.Received(1).ListAsync(filters, page);
     }
+
+    // --- Batch 013: archive cascade wiring. ---
+    // ContractService.ArchiveAsync must delegate to ObligationService.ExpireDueToContractArchiveAsync
+    // so obligations on the archived contract move to Expired. We verify the delegation by using
+    // real repos over an EF Core in-memory-adjacent stub — but since CounterpartyService /
+    // ObligationService are concrete classes without interfaces, the simpler move is to inject a
+    // test spy via a minimal ObligationService subclass. Here we spy on the IObligationRepository
+    // call sequence (ListAsync called exactly once with ContractId=contract.Id).
+
+    [Fact]
+    public async Task ArchiveAsync_OnTerminated_InvokesObligationArchiveCascadeExactlyOnce()
+    {
+        var repo = Substitute.For<IContractRepository>();
+        var cpRepo = Substitute.For<ICounterpartyRepository>();
+        var obRepo = Substitute.For<IObligationRepository>();
+        var evtRepo = Substitute.For<IObligationEventRepository>();
+        var ctx = Substitute.For<ITenantContext>();
+        ctx.TenantId.Returns<Guid?>(TenantA);
+        ctx.IsResolved.Returns(true);
+
+        var cpService = new CounterpartyService(cpRepo, ctx);
+        var stateMachine = new ObligationStateMachine();
+        var obligationService = new ObligationService(obRepo, evtRepo, repo, stateMachine, ctx);
+        var service = new ContractService(repo, cpRepo, cpService, ctx, obligationService);
+
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Archive me",
+            Status = ContractStatus.Terminated,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+        obRepo.ListAsync(Arg.Any<ObligationFilters>(), Arg.Any<PageRequest>())
+            .Returns(new PagedResult<Obligation>(Array.Empty<Obligation>(), new PaginationMetadata(null, false, 0)));
+
+        var result = await service.ArchiveAsync(existing.Id);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(ContractStatus.Archived);
+        await obRepo.Received(1).ListAsync(
+            Arg.Is<ObligationFilters>(f => f.ContractId == existing.Id),
+            Arg.Any<PageRequest>());
+    }
 }

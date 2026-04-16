@@ -436,6 +436,58 @@ public class ContractEndpointsTests : IClassFixture<ContractEndpointsTestFactory
         doc.RootElement.GetProperty("status").GetString().Should().Be("archived");
     }
 
+    // --- Batch 013: archive cascade. ---
+    // When a contract archives, non-terminal obligations on that contract must transition to
+    // Expired (PRD §5.1 archive cascade). End-to-end through the real endpoints + DB.
+    [Fact]
+    public async Task Archive_OnDraftWithObligations_ExpiresObligations()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var id = await CreateContractAsync(client, cpId);
+
+        // Two obligations — one Pending, one we'll Confirm to Active. Both are non-terminal so
+        // archive should expire both.
+        var pendingId = await CreateObligationAsync(client, id);
+        var activeId = await CreateObligationAsync(client, id);
+        (await client.PostAsJsonAsync($"/api/obligations/{activeId}/confirm", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Archive from Draft (legal transition).
+        var archiveResp = await client.PostAsJsonAsync($"/api/contracts/{id}/archive", new { });
+        archiveResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Both obligations should now read as expired.
+        var pendResp = await client.GetAsync($"/api/obligations/{pendingId}");
+        using var pendDoc = JsonDocument.Parse(await pendResp.Content.ReadAsStringAsync());
+        pendDoc.RootElement.GetProperty("status").GetString().Should().Be("expired");
+
+        var actResp = await client.GetAsync($"/api/obligations/{activeId}");
+        using var actDoc = JsonDocument.Parse(await actResp.Content.ReadAsStringAsync());
+        actDoc.RootElement.GetProperty("status").GetString().Should().Be("expired");
+
+        // The active row should have 2 events (confirm → active, then archive cascade → expired).
+        var events = actDoc.RootElement.GetProperty("events");
+        events.GetArrayLength().Should().Be(2);
+        events[1].GetProperty("to_status").GetString().Should().Be("expired");
+        events[1].GetProperty("actor").GetString().Should().Be("system:archive_cascade");
+    }
+
+    private static async Task<Guid> CreateObligationAsync(HttpClient client, Guid contractId)
+    {
+        var resp = await client.PostAsJsonAsync("/api/obligations", new
+        {
+            contract_id = contractId,
+            obligation_type = "payment",
+            title = $"Ob {Guid.NewGuid()}",
+            deadline_date = "2026-06-01",
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("id").GetGuid();
+    }
+
     [Fact]
     public async Task Post_PersistsUnderResolvedTenant()
     {
