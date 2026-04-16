@@ -72,6 +72,12 @@ public static class ServiceRegistration
         services.AddScoped<IObligationEventRepository, ObligationEventRepository>();
         services.AddScoped<ObligationService>();
 
+        // Deadline alerts (Batch 015) — entity, repository, service. The scanner job that fills
+        // the table lands in Batch 016; today the repository is populated manually (tests) or by
+        // future callers. Scoped lifetimes mirror the obligation slice.
+        services.AddScoped<IDeadlineAlertRepository, DeadlineAlertRepository>();
+        services.AddScoped<DeadlineAlertService>();
+
         // Business-day / holiday calendar (Batch 014). Calculator is a stateless singleton backed
         // by the in-memory cache. Repository is scoped because it holds a DbContext — the
         // calculator reaches it through a factory so each cache-miss gets a fresh scope.
