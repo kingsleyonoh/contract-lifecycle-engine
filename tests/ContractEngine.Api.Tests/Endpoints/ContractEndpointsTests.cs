@@ -270,6 +270,173 @@ public class ContractEndpointsTests : IClassFixture<ContractEndpointsTestFactory
     }
 
     [Fact]
+    public async Task Activate_OnDraft_Returns200_AndStatusActive()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("active");
+    }
+
+    [Fact]
+    public async Task Activate_OnActive_Returns422_InvalidTransition()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+
+        // First activate succeeds.
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Second activate attempt — contract is already Active.
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("INVALID_TRANSITION");
+        // details should list valid next states.
+        var details = doc.RootElement.GetProperty("error").GetProperty("details");
+        details.GetArrayLength().Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Activate_WithoutAuth_Returns401()
+    {
+        using var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{Guid.NewGuid()}/activate", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Activate_Nonexistent_Returns404()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{Guid.NewGuid()}/activate", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Terminate_OnActive_Returns200_AndStatusTerminated()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/terminate", new
+        {
+            reason = "breach of SLA",
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("terminated");
+    }
+
+    [Fact]
+    public async Task Terminate_OnDraft_Returns422()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var id = await CreateContractAsync(client, cpId);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/terminate", new
+        {
+            reason = "any",
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("INVALID_TRANSITION");
+    }
+
+    [Fact]
+    public async Task Terminate_WithoutReason_Returns400_ValidationError()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Empty reason — must fail validation.
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/terminate", new
+        {
+            reason = "",
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("VALIDATION_ERROR");
+    }
+
+    [Fact]
+    public async Task Archive_OnTerminated_Returns200()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/terminate", new { reason = "end" }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/archive", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("archived");
+    }
+
+    [Fact]
+    public async Task Archive_OnActive_Returns422()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var id = await CreateContractAsync(client, cpId, effectiveDate: today.AddDays(-1), endDate: today.AddYears(1));
+
+        (await client.PostAsJsonAsync($"/api/contracts/{id}/activate", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/archive", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("INVALID_TRANSITION");
+    }
+
+    [Fact]
+    public async Task Archive_OnDraft_Returns200()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+        var cpId = await CreateCounterpartyAsync(client, $"CP {Guid.NewGuid()}");
+        var id = await CreateContractAsync(client, cpId);
+
+        var resp = await client.PostAsJsonAsync($"/api/contracts/{id}/archive", new { });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("archived");
+    }
+
+    [Fact]
     public async Task Post_PersistsUnderResolvedTenant()
     {
         var (key, tenantId) = await RegisterTenantAsync();
@@ -323,14 +490,29 @@ public class ContractEndpointsTests : IClassFixture<ContractEndpointsTestFactory
         return doc.RootElement.GetProperty("id").GetGuid();
     }
 
-    private static async Task<Guid> CreateContractAsync(HttpClient client, Guid counterpartyId, string type = "vendor")
+    private static async Task<Guid> CreateContractAsync(
+        HttpClient client,
+        Guid counterpartyId,
+        string type = "vendor",
+        DateOnly? effectiveDate = null,
+        DateOnly? endDate = null)
     {
-        var resp = await client.PostAsJsonAsync("/api/contracts", new
-        {
-            title = $"Contract {Guid.NewGuid()}",
-            counterparty_id = counterpartyId,
-            contract_type = type,
-        });
+        object body = effectiveDate is null && endDate is null
+            ? new
+            {
+                title = $"Contract {Guid.NewGuid()}",
+                counterparty_id = counterpartyId,
+                contract_type = type,
+            }
+            : new
+            {
+                title = $"Contract {Guid.NewGuid()}",
+                counterparty_id = counterpartyId,
+                contract_type = type,
+                effective_date = effectiveDate?.ToString("yyyy-MM-dd"),
+                end_date = endDate?.ToString("yyyy-MM-dd"),
+            };
+        var resp = await client.PostAsJsonAsync("/api/contracts", body);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         return doc.RootElement.GetProperty("id").GetGuid();

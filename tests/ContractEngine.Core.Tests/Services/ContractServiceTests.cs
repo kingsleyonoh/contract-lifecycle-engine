@@ -1,5 +1,6 @@
 using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Enums;
+using ContractEngine.Core.Exceptions;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
@@ -219,6 +220,127 @@ public class ContractServiceTests
         var ex = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
         ex.Message.Should().Contain("Terminated");
         ex.Message.Should().Contain("Archived"); // valid next state from Terminated
+    }
+
+    [Fact]
+    public async Task ActivateAsync_OnActive_ThrowsContractTransitionException_WithValidNextStates()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Active,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var act = () => service.ActivateAsync(existing.Id, null, null);
+
+        var ex = (await act.Should().ThrowAsync<ContractTransitionException>()).Which;
+        ex.ValidNextStates.Should().BeEquivalentTo(new[] { ContractStatus.Expiring, ContractStatus.Terminated });
+    }
+
+    [Fact]
+    public async Task ActivateAsync_OnArchived_ThrowsContractTransitionException()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Archived,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var act = () => service.ActivateAsync(existing.Id, null, null);
+
+        var ex = (await act.Should().ThrowAsync<ContractTransitionException>()).Which;
+        ex.ValidNextStates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TerminateAsync_OnDraft_ThrowsContractTransitionException_WithValidNextStates()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Draft,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var act = () => service.TerminateAsync(existing.Id, "early exit", null);
+
+        var ex = (await act.Should().ThrowAsync<ContractTransitionException>()).Which;
+        ex.ValidNextStates.Should().BeEquivalentTo(new[] { ContractStatus.Active, ContractStatus.Archived });
+    }
+
+    [Fact]
+    public async Task TerminateAsync_OnExpiring_TransitionsToTerminated()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Expiring,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var result = await service.TerminateAsync(existing.Id, "counterparty dissolution", null);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(ContractStatus.Terminated);
+        await repo.Received(1).UpdateAsync(Arg.Any<Contract>());
+    }
+
+    [Fact]
+    public async Task ArchiveAsync_OnTerminated_TransitionsToArchived()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Terminated,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var result = await service.ArchiveAsync(existing.Id);
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(ContractStatus.Archived);
+    }
+
+    [Fact]
+    public async Task ArchiveAsync_OnActive_ThrowsContractTransitionException()
+    {
+        var (service, repo, _, _, _) = BuildHarness();
+        var existing = new Contract
+        {
+            Id = Guid.NewGuid(),
+            TenantId = TenantA,
+            CounterpartyId = Guid.NewGuid(),
+            Title = "Contract",
+            Status = ContractStatus.Active,
+        };
+        repo.GetByIdAsync(existing.Id).Returns(existing);
+
+        var act = () => service.ArchiveAsync(existing.Id);
+
+        var ex = (await act.Should().ThrowAsync<ContractTransitionException>()).Which;
+        ex.ValidNextStates.Should().BeEquivalentTo(new[] { ContractStatus.Expiring, ContractStatus.Terminated });
     }
 
     [Fact]

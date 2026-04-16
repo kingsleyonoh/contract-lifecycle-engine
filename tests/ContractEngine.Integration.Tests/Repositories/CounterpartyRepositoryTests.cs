@@ -1,4 +1,5 @@
 using ContractEngine.Core.Abstractions;
+using ContractEngine.Core.Enums;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
@@ -107,15 +108,39 @@ public class CounterpartyRepositoryTests
     }
 
     [Fact]
-    public async Task GetContractCountAsync_ReturnsZero_StubBeforeContractEntityShips()
+    public async Task GetContractCountAsync_ReturnsCountForCurrentTenantCounterparty()
     {
         var tenantId = await SeedTenantAsync();
         var cpId = await SeedCounterpartyAsync(tenantId, $"Counts-{Guid.NewGuid()}");
+
+        // Seed three contracts under this counterparty.
+        await SeedContractAsync(tenantId, cpId);
+        await SeedContractAsync(tenantId, cpId);
+        await SeedContractAsync(tenantId, cpId);
 
         using var scope = ScopeFor(tenantId);
         var repo = scope.ServiceProvider.GetRequiredService<ICounterpartyRepository>();
 
         var count = await repo.GetContractCountAsync(cpId);
+        count.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task GetContractCountAsync_OtherTenantCounterparty_ReturnsZero_ViaQueryFilter()
+    {
+        var tenantA = await SeedTenantAsync();
+        var tenantB = await SeedTenantAsync();
+
+        // Tenant B has a counterparty with 2 contracts under it.
+        var cpB = await SeedCounterpartyAsync(tenantB, $"Foreign-{Guid.NewGuid()}");
+        await SeedContractAsync(tenantB, cpB);
+        await SeedContractAsync(tenantB, cpB);
+
+        // Count scoped to tenant A must be zero — the global tenant filter hides tenant B's rows.
+        using var scope = ScopeFor(tenantA);
+        var repo = scope.ServiceProvider.GetRequiredService<ICounterpartyRepository>();
+
+        var count = await repo.GetContractCountAsync(cpB);
         count.Should().Be(0);
     }
 
@@ -151,6 +176,29 @@ public class CounterpartyRepositoryTests
             TenantId = tenantId,
             Name = name,
             Industry = industry,
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    private async Task<Guid> SeedContractAsync(Guid tenantId, Guid counterpartyId)
+    {
+        using var scope = _fixture.CreateScope(services =>
+            services.AddScoped<ITenantContext, NullTenantContext>());
+        var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
+        var id = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        db.Contracts.Add(new Contract
+        {
+            Id = id,
+            TenantId = tenantId,
+            CounterpartyId = counterpartyId,
+            Title = $"Contract {id:N}",
+            ContractType = ContractType.Vendor,
+            Status = ContractStatus.Draft,
+            Currency = "USD",
+            CreatedAt = now,
+            UpdatedAt = now,
         });
         await db.SaveChangesAsync();
         return id;

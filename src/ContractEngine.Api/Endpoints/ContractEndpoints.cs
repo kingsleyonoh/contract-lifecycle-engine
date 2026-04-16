@@ -10,11 +10,14 @@ using FluentValidation;
 namespace ContractEngine.Api.Endpoints;
 
 /// <summary>
-/// Minimal-API endpoint group for basic contract CRUD. Lifecycle action endpoints (activate /
-/// terminate / archive) are deferred to Batch 008 so the state-machine coverage can ship with its
-/// dedicated tests. Every endpoint requires a resolved tenant — public access returns 401 via the
-/// shared <see cref="UnauthorizedAccessException"/> → envelope mapping in
-/// <c>ExceptionHandlingMiddleware</c>. Rate limits follow PRD §8b.
+/// Minimal-API endpoint group for contract CRUD and lifecycle actions. Every endpoint requires a
+/// resolved tenant — public access returns 401 via the shared
+/// <see cref="UnauthorizedAccessException"/> → envelope mapping in
+/// <c>ExceptionHandlingMiddleware</c>. Rate limits follow PRD §8b. Lifecycle action endpoints
+/// (<c>/activate</c>, <c>/terminate</c>, <c>/archive</c>) throw
+/// <see cref="Core.Exceptions.ContractTransitionException"/> when a caller requests an invalid
+/// transition; the middleware maps that to <c>422 INVALID_TRANSITION</c> with the valid next
+/// states in <c>details[]</c>.
 /// </summary>
 public static class ContractEndpoints
 {
@@ -31,6 +34,18 @@ public static class ContractEndpoints
 
         builder.MapPatch("/api/contracts/{id:guid}", PatchAsync)
             .RequireRateLimiting(RateLimitPolicies.Write50);
+
+        // Lifecycle actions (PRD §8b). Rate limits match the spec: activate 20/min,
+        // terminate/archive 10/min. Invalid state transitions are thrown by ContractService as
+        // ContractTransitionException → 422 INVALID_TRANSITION via the middleware.
+        builder.MapPost("/api/contracts/{id:guid}/activate", ActivateAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write20);
+
+        builder.MapPost("/api/contracts/{id:guid}/terminate", TerminateAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write10);
+
+        builder.MapPost("/api/contracts/{id:guid}/archive", ArchiveAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write10);
 
         return builder;
     }
@@ -136,6 +151,82 @@ public static class ContractEndpoints
         }
 
         var updated = await service.UpdateAsync(id, domain, cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> ActivateAsync(
+        Guid id,
+        ActivateContractRequestWire? request,
+        ContractService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        RequireResolvedTenant(tenantContext);
+
+        // Empty body is valid — both fields are optional. Guard against the Minimal API binder
+        // handing us a null model when the caller POSTs no body at all.
+        var effectiveDate = request?.EffectiveDate;
+        var endDate = request?.EndDate;
+
+        var updated = await service.ActivateAsync(id, effectiveDate, endDate, cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> TerminateAsync(
+        Guid id,
+        TerminateContractRequestWire? request,
+        ContractService service,
+        ITenantContext tenantContext,
+        ILogger<Program> logger,
+        CancellationToken cancellationToken)
+    {
+        RequireResolvedTenant(tenantContext);
+
+        // Reason is required. Raise VALIDATION_ERROR (400) rather than letting the service throw
+        // ArgumentException — keeps the wire contract consistent with the rest of the API.
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            var failure = new FluentValidation.Results.ValidationFailure(
+                "reason",
+                "reason is required to terminate a contract");
+            throw new ValidationException(new[] { failure });
+        }
+
+        var updated = await service.TerminateAsync(id, request.Reason, request.TerminationDate, cancellationToken);
+        if (updated is null)
+        {
+            return Results.NotFound();
+        }
+
+        // Batch 008: log the termination reason here. Proper audit-trail persistence will land
+        // with the ObligationEvents pattern in a later batch.
+        logger.LogInformation(
+            "Contract {ContractId} terminated with reason {TerminationReason}",
+            id,
+            request.Reason);
+
+        return Results.Ok(MapToResponse(updated));
+    }
+
+    private static async Task<IResult> ArchiveAsync(
+        Guid id,
+        ContractService service,
+        ITenantContext tenantContext,
+        CancellationToken cancellationToken)
+    {
+        RequireResolvedTenant(tenantContext);
+
+        var updated = await service.ArchiveAsync(id, cancellationToken);
         if (updated is null)
         {
             return Results.NotFound();

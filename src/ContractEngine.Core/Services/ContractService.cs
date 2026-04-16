@@ -1,5 +1,6 @@
 using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Enums;
+using ContractEngine.Core.Exceptions;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
@@ -291,6 +292,9 @@ public sealed class ContractService
             throw InvalidTransition(existing.Status, ContractStatus.Archived);
         }
 
+        // TODO(batch-010): expire all non-terminal obligations on this contract once the
+        // Obligation entity / state machine ship (PRD §5.1 archive cascade). The contract
+        // itself archives correctly today; only the cascade is deferred.
         existing.Status = ContractStatus.Archived;
         existing.UpdatedAt = DateTime.UtcNow;
         await _repository.UpdateAsync(existing, cancellationToken);
@@ -341,11 +345,9 @@ public sealed class ContractService
         return created.Id;
     }
 
-    private static InvalidOperationException InvalidTransition(ContractStatus from, ContractStatus to)
+    private static ContractTransitionException InvalidTransition(ContractStatus from, ContractStatus to)
     {
-        var valid = string.Join(", ", ValidNextStates(from));
-        return new InvalidOperationException(
-            $"invalid contract status transition: {from} → {to}. valid next states from {from}: [{valid}]");
+        return new ContractTransitionException(from, to, ValidNextStates(from));
     }
 
     private static IReadOnlyList<ContractStatus> ValidNextStates(ContractStatus from) => from switch

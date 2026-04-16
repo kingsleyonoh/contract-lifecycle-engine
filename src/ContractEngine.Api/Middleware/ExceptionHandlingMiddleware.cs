@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ContractEngine.Core.Exceptions;
 using FluentValidation;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
@@ -90,6 +91,21 @@ public sealed class ExceptionHandlingMiddleware
 
             case UnauthorizedAccessException unauthorized:
                 return (401, "UNAUTHORIZED", SafeMessage(unauthorized.Message, "Authentication required"), Array.Empty<ErrorFieldDetail>());
+
+            // MUST precede the generic InvalidOperationException arm — ContractTransitionException
+            // derives from InvalidOperationException, so order here is load-bearing. 422 with a
+            // dedicated code per PRD §5.3 (future Obligation state machine will reuse this envelope).
+            case ContractTransitionException transition:
+            {
+                var details = transition.ValidNextStates
+                    .Select(s => new ErrorFieldDetail
+                    {
+                        Field = "valid_next_states",
+                        Message = s.ToString().ToLowerInvariant(),
+                    })
+                    .ToList();
+                return (422, "INVALID_TRANSITION", SafeMessage(transition.Message, "Invalid status transition"), details);
+            }
 
             case InvalidOperationException conflict:
                 return (409, "CONFLICT", SafeMessage(conflict.Message, "The request conflicts with the current state"), Array.Empty<ErrorFieldDetail>());

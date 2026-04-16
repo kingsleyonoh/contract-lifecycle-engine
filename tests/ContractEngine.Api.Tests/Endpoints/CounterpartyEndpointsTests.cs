@@ -181,6 +181,32 @@ public class CounterpartyEndpointsTests : IClassFixture<CounterpartyEndpointsTes
     }
 
     [Fact]
+    public async Task GetById_WithThreeContracts_ReturnsContractCountThree()
+    {
+        var (key, _) = await RegisterTenantAsync();
+        using var client = AuthedClient(key);
+
+        var id = await CreateCounterpartyAsync(client, $"CountOwner {Guid.NewGuid()}");
+
+        // Seed three contracts on this counterparty.
+        for (var i = 0; i < 3; i++)
+        {
+            var resp = await client.PostAsJsonAsync("/api/contracts", new
+            {
+                title = $"Count-Contract-{i} {Guid.NewGuid()}",
+                counterparty_id = id,
+                contract_type = "vendor",
+            });
+            resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        }
+
+        var getResp = await client.GetAsync($"/api/counterparties/{id}");
+        getResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await getResp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("contract_count").GetInt32().Should().Be(3);
+    }
+
+    [Fact]
     public async Task GetById_ForOtherTenantCounterparty_Returns404()
     {
         var (keyA, _) = await RegisterTenantAsync();

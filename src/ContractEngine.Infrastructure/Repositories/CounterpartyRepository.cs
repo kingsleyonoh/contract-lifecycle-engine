@@ -67,9 +67,9 @@ public sealed class CounterpartyRepository : ICounterpartyRepository
 
     public Task<int> GetContractCountAsync(Guid counterpartyId, CancellationToken cancellationToken = default)
     {
-        // Stub — the Contract entity lands in Batch 007. Returning 0 keeps the response envelope
-        // stable so SDK clients already generated against the spec don't break on schema drift.
-        _ = counterpartyId;
-        return Task.FromResult(0);
+        // Real count. Global tenant query filter on the Contract entity scopes this to the
+        // current tenant automatically — a foreign counterparty id returns 0 without any explicit
+        // tenant comparison here.
+        return _db.Contracts.CountAsync(c => c.CounterpartyId == counterpartyId, cancellationToken);
     }
 }
