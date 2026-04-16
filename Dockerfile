@@ -2,18 +2,18 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy solution and project files for restore
-COPY ContractEngine.sln .
+# Copy only the Api project graph for a layer-cached restore. The solution-wide
+# restore would also pull in test projects that aren't shipped in the runtime image.
 COPY src/ContractEngine.Api/ContractEngine.Api.csproj src/ContractEngine.Api/
 COPY src/ContractEngine.Core/ContractEngine.Core.csproj src/ContractEngine.Core/
 COPY src/ContractEngine.Infrastructure/ContractEngine.Infrastructure.csproj src/ContractEngine.Infrastructure/
 COPY src/ContractEngine.Jobs/ContractEngine.Jobs.csproj src/ContractEngine.Jobs/
 
-# Restore dependencies (cached layer)
-RUN dotnet restore
+# Restore dependencies for the Api and its transitive project refs (cached layer).
+RUN dotnet restore src/ContractEngine.Api/ContractEngine.Api.csproj
 
-# Copy everything and build
-COPY . .
+# Copy the full src/ tree and publish the Api (tests excluded by .dockerignore).
+COPY src/ src/
 RUN dotnet publish src/ContractEngine.Api/ContractEngine.Api.csproj -c Release -o /app/publish --no-restore
 
 # ─── Runtime stage ───

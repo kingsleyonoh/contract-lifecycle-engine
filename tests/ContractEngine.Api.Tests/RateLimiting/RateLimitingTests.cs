@@ -159,6 +159,7 @@ public abstract class RateLimitedTestFactoryBase : WebApplicationFactory<Program
         builder.UseSetting("DATABASE_URL", TestConnectionString);
         builder.UseSetting("JOBS_ENABLED", "false");
         builder.UseSetting("AUTO_SEED", "false");
+        builder.UseSetting("AUTO_MIGRATE", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
     }
 

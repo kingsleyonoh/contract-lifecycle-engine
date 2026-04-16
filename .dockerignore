@@ -14,6 +14,9 @@
 **/publish/
 **/out/
 
+# Tests (the runtime image only needs the Api publish output)
+tests/
+
 # Test results
 **/TestResults/
 **/coverage/

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   app:
     image: ghcr.io/kingsleyonoh/contract-lifecycle-engine:latest
@@ -10,6 +8,9 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - DATABASE_URL=${DATABASE_URL}
       - DOCUMENT_STORAGE_PATH=/app/data/documents
+      - AUTO_SEED=${AUTO_SEED:-true}
+      - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
+      - SELF_REGISTRATION_ENABLED=${SELF_REGISTRATION_ENABLED:-true}
       - RAG_PLATFORM_URL=${RAG_PLATFORM_URL}
       - RAG_PLATFORM_API_KEY=${RAG_PLATFORM_API_KEY}
       - RAG_PLATFORM_ENABLED=${RAG_PLATFORM_ENABLED:-true}
@@ -28,9 +29,8 @@ services:
       - INVOICE_RECON_ENABLED=${INVOICE_RECON_ENABLED:-false}
       - SENTRY_DSN=${SENTRY_DSN}
       - LOG_LEVEL=${LOG_LEVEL:-Information}
-      - AUTO_SEED=${AUTO_SEED:-true}
-      - SELF_REGISTRATION_ENABLED=${SELF_REGISTRATION_ENABLED:-true}
     volumes:
+      # Persist uploaded contract documents across container restarts/rebuilds.
       - documents:/app/data/documents
     depends_on:
       db:

@@ -95,6 +95,28 @@ if (args.Contains("--seed"))
     return;
 }
 
+// AUTO_MIGRATE (default true): apply pending EF Core migrations on startup so container
+// deploys converge on the latest schema without an external migration step. Guarded by the
+// Testing environment short-circuit so WebApplicationFactory-based tests (which manage their
+// own schema via DatabaseFixture / EnsureDatabaseReady) never race on migrations during boot.
+// Set AUTO_MIGRATE=false when running CI-triggered manual migration pipelines.
+var autoMigrate = builder.Configuration.GetValue("AUTO_MIGRATE", defaultValue: true);
+if (autoMigrate && !app.Environment.IsEnvironment("Testing"))
+{
+    try
+    {
+        using var migrationScope = app.Services.CreateScope();
+        var dbContext = migrationScope.ServiceProvider.GetRequiredService<ContractDbContext>();
+        app.Logger.LogInformation("Applying EF Core migrations on startup...");
+        await dbContext.Database.MigrateAsync();
+        app.Logger.LogInformation("EF Core migrations applied successfully.");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Auto-migrate skipped (DB not ready?): {Message}", ex.Message);
+    }
+}
+
 // Pipeline order: exception handler (outermost) → request logging (captures request_id) →
 // tenant resolution (reads X-API-Key, populates ITenantContext so downstream code & logs can
 // surface tenant_id) → rate limiter (partitions on the now-available X-API-Key) → routes.
