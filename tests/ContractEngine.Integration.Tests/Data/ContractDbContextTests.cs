@@ -42,14 +42,15 @@ public class ContractDbContextTests
     }
 
     [Fact]
-    public void ITenantContext_IsRegistered_AsNullTenantContextByDefault()
+    public void ITenantContext_IsRegistered_AsUnresolvedAccessorByDefault()
     {
         using var provider = BuildProvider();
         using var scope = provider.CreateScope();
 
         var tenantContext = scope.ServiceProvider.GetRequiredService<ITenantContext>();
 
-        tenantContext.Should().BeOfType<NullTenantContext>();
+        // Batch 004 replaced NullTenantContext with TenantContextAccessor. Before the middleware
+        // resolves a tenant, the accessor reports the same "unresolved" state as NullTenantContext.
         tenantContext.IsResolved.Should().BeFalse();
         tenantContext.TenantId.Should().BeNull();
     }

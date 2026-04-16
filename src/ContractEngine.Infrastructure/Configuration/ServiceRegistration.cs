@@ -1,5 +1,11 @@
 using ContractEngine.Core.Abstractions;
+using ContractEngine.Core.Interfaces;
+using ContractEngine.Core.Services;
+using ContractEngine.Core.Validation;
 using ContractEngine.Infrastructure.Data;
+using ContractEngine.Infrastructure.Repositories;
+using ContractEngine.Infrastructure.Tenancy;
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,7 +14,7 @@ namespace ContractEngine.Infrastructure.Configuration;
 
 /// <summary>
 /// Extension methods for registering the Infrastructure layer (EF Core DbContext, repositories,
-/// external clients) into the ASP.NET Core DI container.
+/// services, tenant context, validators) into the ASP.NET Core DI container.
 /// </summary>
 public static class ServiceRegistration
 {
@@ -16,24 +22,29 @@ public static class ServiceRegistration
         "Host=localhost;Port=5445;Database=contract_engine;Username=contract_engine;Password=localdev";
 
     /// <summary>
-    /// Registers the Contract Engine infrastructure services: <see cref="ContractDbContext"/>
-    /// (scoped) and <see cref="ITenantContext"/> (scoped). Until
-    /// <c>TenantResolutionMiddleware</c> ships, the tenant context defaults to
-    /// <see cref="NullTenantContext"/> — callers that require a resolved tenant must check
-    /// <see cref="ITenantContext.IsResolved"/>.
-    ///
-    /// Reads the Postgres connection string from the <c>DATABASE_URL</c> environment/config
-    /// key first, then <c>ConnectionStrings:Default</c>, then falls back to a documented local
-    /// development string (Docker Postgres on host port 5445).
+    /// Registers Contract Engine infrastructure services. After Batch 004 the tenant context is
+    /// a scoped <see cref="TenantContextAccessor"/> that the resolution middleware writes to —
+    /// unresolved requests (public endpoints, webhooks pre-verification) still see
+    /// <c>IsResolved=false</c>, matching the previous <see cref="NullTenantContext"/> behaviour.
     /// </summary>
     public static IServiceCollection AddContractEngineInfrastructure(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         var connectionString = ResolveConnectionString(configuration);
-
         services.AddDbContext<ContractDbContext>(options => options.UseNpgsql(connectionString));
-        services.AddScoped<ITenantContext, NullTenantContext>();
+
+        // One scoped TenantContextAccessor per request, aliased to ITenantContext for consumers.
+        services.AddScoped<TenantContextAccessor>();
+        services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContextAccessor>());
+
+        // Tenant data access + service layer.
+        services.AddScoped<ITenantRepository, TenantRepository>();
+        services.AddScoped<TenantService>();
+
+        // FluentValidation — register validators by assembly scan (Core). New validators
+        // placed under ContractEngine.Core.Validation are picked up automatically.
+        services.AddValidatorsFromAssemblyContaining<RegisterTenantRequestValidator>();
 
         return services;
     }
