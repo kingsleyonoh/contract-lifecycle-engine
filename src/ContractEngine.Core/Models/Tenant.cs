@@ -1,3 +1,5 @@
+using ContractEngine.Core.Pagination;
+
 namespace ContractEngine.Core.Models;
 
 /// <summary>
@@ -7,9 +9,10 @@ namespace ContractEngine.Core.Models;
 /// SHA-256-hashes a <c>cle_live_{32_hex}</c> API key; the plaintext is returned exactly once and
 /// never persisted.
 ///
-/// Schema source: PRD §4.1.
+/// Schema source: PRD §4.1. Implements <see cref="IHasCursor"/> so it can flow through the
+/// shared cursor-pagination helper (Key Patterns §2).
 /// </summary>
-public class Tenant
+public class Tenant : IHasCursor
 {
     public Guid Id { get; set; }
 

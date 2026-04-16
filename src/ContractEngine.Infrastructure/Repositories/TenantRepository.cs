@@ -41,4 +41,13 @@ public sealed class TenantRepository : ITenantRepository
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
     }
+
+    public async Task UpdateAsync(Tenant tenant, CancellationToken cancellationToken = default)
+    {
+        // The caller supplies an in-memory tenant (typically reloaded via GetByIdAsync +
+        // AsNoTracking). Attach it to the change tracker in Modified state so EF Core issues
+        // a UPDATE covering all scalar columns.
+        _db.Tenants.Update(tenant);
+        await _db.SaveChangesAsync(cancellationToken);
+    }
 }

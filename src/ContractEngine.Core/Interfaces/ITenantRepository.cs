@@ -19,4 +19,11 @@ public interface ITenantRepository
     Task<Tenant?> GetByApiKeyHashAsync(string apiKeyHash, CancellationToken cancellationToken = default);
 
     Task<Tenant?> GetByIdAsync(Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Persists changes to a tenant row. Used by <c>PATCH /api/tenants/me</c> to flush in-memory
+    /// edits back to Postgres. Implementations must update the row server-side (no upsert
+    /// semantics) — caller is responsible for loading the entity and mutating it first.
+    /// </summary>
+    Task UpdateAsync(Tenant tenant, CancellationToken cancellationToken = default);
 }

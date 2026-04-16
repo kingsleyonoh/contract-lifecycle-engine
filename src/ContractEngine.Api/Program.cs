@@ -1,5 +1,6 @@
 using ContractEngine.Api.Endpoints;
 using ContractEngine.Api.Middleware;
+using ContractEngine.Api.RateLimiting;
 using ContractEngine.Infrastructure.Configuration;
 using Serilog;
 
@@ -34,15 +35,17 @@ else
 }
 
 builder.Services.AddContractEngineInfrastructure(builder.Configuration);
+builder.Services.AddContractEngineRateLimiting(builder.Configuration);
 
 var app = builder.Build();
 
 // Pipeline order: exception handler (outermost) → request logging (captures request_id) →
 // tenant resolution (reads X-API-Key, populates ITenantContext so downstream code & logs can
-// surface tenant_id) → routes.
+// surface tenant_id) → rate limiter (partitions on the now-available X-API-Key) → routes.
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseMiddleware<RequestLoggingMiddleware>();
 app.UseMiddleware<TenantResolutionMiddleware>();
+app.UseRateLimiter();
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapTenantEndpoints();

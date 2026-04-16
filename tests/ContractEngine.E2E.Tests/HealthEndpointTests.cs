@@ -136,6 +136,39 @@ public class HealthEndpointTests : IAsyncLifetime
         healthResp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    [Fact]
+    public async Task GetTenantsMe_WithValidKey_ReturnsTenantShape_OverRealKestrel()
+    {
+        // Register a tenant through the live server, then round-trip the authenticated GET /me
+        // endpoint to confirm the rate-limiter middleware, tenant resolution middleware, and
+        // endpoint handler all cooperate once the service is running out of the compiled DLL
+        // (catches wiring issues that in-process test clients miss — middleware order, route
+        // mapping, and RateLimiter/exception-handler interaction).
+        var uniqueName = $"E2E Me {Guid.NewGuid()}";
+        var registerResp = await _client!.PostAsJsonAsync("/api/tenants/register", new { name = uniqueName });
+        registerResp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using var regDoc = JsonDocument.Parse(await registerResp.Content.ReadAsStringAsync());
+        var apiKey = regDoc.RootElement.GetProperty("apiKey").GetString()!;
+        var expectedId = regDoc.RootElement.GetProperty("id").GetGuid();
+
+        using var authed = new HttpClient
+        {
+            BaseAddress = _client.BaseAddress,
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        authed.DefaultRequestHeaders.Add("X-API-Key", apiKey);
+        var meResp = await authed.GetAsync("/api/tenants/me");
+        meResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var meDoc = JsonDocument.Parse(await meResp.Content.ReadAsStringAsync());
+        var root = meDoc.RootElement;
+        root.GetProperty("id").GetGuid().Should().Be(expectedId);
+        root.GetProperty("name").GetString().Should().Be(uniqueName);
+        root.GetProperty("default_timezone").GetString().Should().NotBeNullOrEmpty();
+        root.GetProperty("default_currency").GetString().Should().NotBeNullOrEmpty();
+    }
+
     public Task DisposeAsync()
     {
         _client?.Dispose();
