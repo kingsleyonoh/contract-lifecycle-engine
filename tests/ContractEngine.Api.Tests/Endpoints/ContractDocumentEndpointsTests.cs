@@ -316,6 +316,8 @@ public class ContractDocumentEndpointsTestFactory : WebApplicationFactory<Progra
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
         builder.UseSetting("DOCUMENT_STORAGE_PATH", TestStorageRoot);
         builder.UseSetting("RATE_LIMIT__PUBLIC", "1000");

@@ -215,6 +215,8 @@ public class TenantMeTestFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
         // Generous rate limits so these tests never hit 429s incidentally.
         builder.UseSetting("RATE_LIMIT__PUBLIC", "1000");

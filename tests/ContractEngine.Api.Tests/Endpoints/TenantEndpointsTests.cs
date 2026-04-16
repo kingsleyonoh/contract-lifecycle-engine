@@ -144,6 +144,8 @@ public class TenantEndpointsTestFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
     }
 
@@ -198,6 +200,8 @@ public class TenantEndpointsDisabledFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "false");
     }
 }

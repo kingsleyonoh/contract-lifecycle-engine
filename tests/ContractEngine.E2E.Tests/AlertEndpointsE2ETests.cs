@@ -164,6 +164,8 @@ public class AlertEndpointsE2ETests : IAsyncLifetime
         psi.Environment["ASPNETCORE_URLS"] = $"http://localhost:{port}";
         psi.Environment["DATABASE_URL"] = TestConnectionString;
         psi.Environment["SELF_REGISTRATION_ENABLED"] = "true";
+        psi.Environment["JOBS_ENABLED"] = "false";
+        psi.Environment["AUTO_SEED"] = "false";
 
         var process = Process.Start(psi)!;
         process.OutputDataReceived += (_, _) => { };

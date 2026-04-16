@@ -333,6 +333,8 @@ public class CounterpartyEndpointsTestFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
         // Very generous limits so the tests never 429 under load.
         builder.UseSetting("RATE_LIMIT__PUBLIC", "1000");

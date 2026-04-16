@@ -5,6 +5,8 @@ using ContractEngine.Api.Middleware;
 using ContractEngine.Api.RateLimiting;
 using ContractEngine.Infrastructure.Configuration;
 using ContractEngine.Infrastructure.Data;
+using ContractEngine.Jobs;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 
@@ -40,6 +42,7 @@ else
 
 builder.Services.AddContractEngineInfrastructure(builder.Configuration);
 builder.Services.AddContractEngineRateLimiting(builder.Configuration);
+builder.Services.AddContractEngineJobs(builder.Configuration);
 
 // JSON enum (de)serialisation: PascalCase members → snake_case lowercase on the wire so values
 // match PRD §4.3 CHECK constraints ("draft", "active", "termination_notice"). This single policy
@@ -51,6 +54,46 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+
+// First-run seed CLI path (PRD §11). Invoked via `dotnet run -- --seed`; short-circuits before
+// the HTTP pipeline starts so the process exits after printing the API key — the scheduler, rate
+// limiter, and middleware never spin up. Critical: we DON'T Run() the app on this branch.
+if (args.Contains("--seed"))
+{
+    using var scope = app.Services.CreateScope();
+    var sp = scope.ServiceProvider;
+    var seeder = sp.GetRequiredService<FirstRunSeeder>();
+    var defaultName = builder.Configuration.GetValue("DEFAULT_TENANT_NAME", defaultValue: "Default")
+        ?? "Default";
+
+    try
+    {
+        var result = await seeder.RunAsync(defaultName);
+        if (result is null)
+        {
+            var tenantCount = await scope.ServiceProvider
+                .GetRequiredService<ContractDbContext>()
+                .Tenants.IgnoreQueryFilters().CountAsync();
+            Console.WriteLine($"Already initialized — {tenantCount} tenant(s) exist.");
+        }
+        else
+        {
+            Console.WriteLine("Setup complete!");
+            Console.WriteLine($"API Key: {result.PlaintextApiKey}");
+            Console.WriteLine("   Use this in the X-API-Key header for all requests.");
+            Console.WriteLine();
+            Console.WriteLine("Test it:");
+            Console.WriteLine($"   curl -H \"X-API-Key: {result.PlaintextApiKey}\" http://localhost:5000/api/tenants/me");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Seed failed: {ex.Message}");
+        return;
+    }
+
+    return;
+}
 
 // Pipeline order: exception handler (outermost) → request logging (captures request_id) →
 // tenant resolution (reads X-API-Key, populates ITenantContext so downstream code & logs can
@@ -70,12 +113,24 @@ if (autoSeed)
     try
     {
         using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ContractEngine.Infrastructure.Data.ContractDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
         await HolidayCalendarSeeder.SeedAsync(db);
+
+        // Auto first-run: if no tenants exist and AUTO_SEED is on, create the default tenant too.
+        // The key is logged once so operators can grab it from stdout on first boot.
+        var seeder = scope.ServiceProvider.GetRequiredService<FirstRunSeeder>();
+        var defaultName = builder.Configuration.GetValue("DEFAULT_TENANT_NAME", defaultValue: "Default")
+            ?? "Default";
+        var seedResult = await seeder.RunAsync(defaultName);
+        if (seedResult is not null)
+        {
+            Console.WriteLine("First-run auto-seed: created default tenant.");
+            Console.WriteLine($"API Key: {seedResult.PlaintextApiKey}");
+        }
     }
     catch (Exception ex)
     {
-        Log.Warning(ex, "Holiday calendar seeding skipped (DB not ready?): {Message}", ex.Message);
+        Log.Warning(ex, "Auto-seed skipped (DB not ready?): {Message}", ex.Message);
     }
 }
 

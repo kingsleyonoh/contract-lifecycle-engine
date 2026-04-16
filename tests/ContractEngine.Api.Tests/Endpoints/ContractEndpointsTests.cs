@@ -598,6 +598,8 @@ public class ContractEndpointsTestFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
         builder.UseSetting("SELF_REGISTRATION_ENABLED", "true");
         builder.UseSetting("RATE_LIMIT__PUBLIC", "1000");
         builder.UseSetting("RATE_LIMIT__READ_100", "1000");

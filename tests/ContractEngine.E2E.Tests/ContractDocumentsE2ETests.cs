@@ -119,6 +119,8 @@ public class ContractDocumentsE2ETests : IAsyncLifetime
         psi.Environment["ASPNETCORE_URLS"] = $"http://localhost:{port}";
         psi.Environment["DATABASE_URL"] = TestConnectionString;
         psi.Environment["SELF_REGISTRATION_ENABLED"] = "true";
+        psi.Environment["JOBS_ENABLED"] = "false";
+        psi.Environment["AUTO_SEED"] = "false";
         psi.Environment["DOCUMENT_STORAGE_PATH"] = storageRoot;
 
         var process = Process.Start(psi)!;

@@ -126,6 +126,8 @@ public class TenantResolutionTestFactory : WebApplicationFactory<Program>
             .UseEnvironment(builder, Environments.Development);
 
         builder.UseSetting("DATABASE_URL", TestConnectionString);
+        builder.UseSetting("JOBS_ENABLED", "false");
+        builder.UseSetting("AUTO_SEED", "false");
 
         Microsoft.AspNetCore.Hosting.WebHostBuilderExtensions.Configure(builder, app =>
         {
