@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ContractEngine.Api.Endpoints;
 using ContractEngine.Api.Middleware;
 using ContractEngine.Api.RateLimiting;
@@ -37,6 +39,15 @@ else
 builder.Services.AddContractEngineInfrastructure(builder.Configuration);
 builder.Services.AddContractEngineRateLimiting(builder.Configuration);
 
+// JSON enum (de)serialisation: PascalCase members → snake_case lowercase on the wire so values
+// match PRD §4.3 CHECK constraints ("draft", "active", "termination_notice"). This single policy
+// covers ContractStatus, ContractType, ObligationStatus, ObligationType, and any future enums.
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(
+        new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
+});
+
 var app = builder.Build();
 
 // Pipeline order: exception handler (outermost) → request logging (captures request_id) →
@@ -50,6 +61,7 @@ app.UseRateLimiter();
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapTenantEndpoints();
 app.MapCounterpartyEndpoints();
+app.MapContractEndpoints();
 
 app.Run();
 
