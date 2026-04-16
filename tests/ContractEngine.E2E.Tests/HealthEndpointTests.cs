@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using FluentAssertions;
 using Xunit;
 
@@ -10,12 +11,19 @@ public class HealthEndpointTests : IAsyncLifetime
 {
     private Process? _serverProcess;
     private HttpClient? _client;
+    private StringBuilder _stderrCapture = new();
     private const int Port = 5050;
 
     public async Task InitializeAsync()
     {
-        // Launch the compiled API exe directly from this test's output directory.
-        // The .csproj references ContractEngine.Api, so the API assembly is copied next to the test binary.
+        _serverProcess = StartApiSubprocess(Port, _stderrCapture);
+        await WaitForPortBoundAsync(_serverProcess, Port, TimeSpan.FromSeconds(30), _stderrCapture);
+        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{Port}"), Timeout = TimeSpan.FromSeconds(10) };
+        await WaitForHealthyAsync(_client, TimeSpan.FromSeconds(15));
+    }
+
+    private static Process StartApiSubprocess(int port, StringBuilder stderrCapture)
+    {
         var apiDllPath = Path.Combine(AppContext.BaseDirectory, "ContractEngine.Api.dll");
         if (!File.Exists(apiDllPath))
         {
@@ -25,7 +33,7 @@ public class HealthEndpointTests : IAsyncLifetime
         var psi = new ProcessStartInfo
         {
             FileName = "dotnet",
-            Arguments = $"\"{apiDllPath}\" --urls http://localhost:{Port}",
+            Arguments = $"\"{apiDllPath}\" --urls http://localhost:{port}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -33,52 +41,47 @@ public class HealthEndpointTests : IAsyncLifetime
             WorkingDirectory = AppContext.BaseDirectory,
         };
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-        psi.Environment["ASPNETCORE_URLS"] = $"http://localhost:{Port}";
+        psi.Environment["ASPNETCORE_URLS"] = $"http://localhost:{port}";
 
-        _serverProcess = Process.Start(psi)!;
+        var process = Process.Start(psi)!;
+        process.OutputDataReceived += (_, _) => { };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrCapture.AppendLine(e.Data); };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        return process;
+    }
 
-        // Drain stdout/stderr continuously so Kestrel doesn't stall on a full redirect buffer.
-        var stderrCapture = new System.Text.StringBuilder();
-        _serverProcess.OutputDataReceived += (_, _) => { };
-        _serverProcess.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrCapture.AppendLine(e.Data); };
-        _serverProcess.BeginOutputReadLine();
-        _serverProcess.BeginErrorReadLine();
-
-        // Wait for the port to be listening before constructing the HttpClient.
-        // Avoids spraying fetches at a port that hasn't bound yet (which otherwise
-        // produces transient socket aborts on Windows).
-        var deadline = DateTime.UtcNow.AddSeconds(30);
+    private static async Task WaitForPortBoundAsync(Process process, int port, TimeSpan timeout, StringBuilder stderrCapture)
+    {
+        var deadline = DateTime.UtcNow.Add(timeout);
         while (DateTime.UtcNow < deadline)
         {
-            if (_serverProcess.HasExited)
+            if (process.HasExited)
             {
-                throw new InvalidOperationException($"E2E server exited prematurely (code {_serverProcess.ExitCode}). Stderr: {stderrCapture}");
+                throw new InvalidOperationException($"E2E server exited prematurely (code {process.ExitCode}). Stderr: {stderrCapture}");
             }
 
             try
             {
                 using var tcp = new TcpClient();
-                await tcp.ConnectAsync("127.0.0.1", Port);
-                if (tcp.Connected)
-                {
-                    break;
-                }
+                await tcp.ConnectAsync("127.0.0.1", port);
+                if (tcp.Connected) return;
             }
             catch
             {
                 await Task.Delay(250);
             }
         }
+    }
 
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{Port}"), Timeout = TimeSpan.FromSeconds(10) };
-
-        // Final confirmation — one HTTP roundtrip against the live port.
-        var readyDeadline = DateTime.UtcNow.AddSeconds(15);
-        while (DateTime.UtcNow < readyDeadline)
+    private static async Task WaitForHealthyAsync(HttpClient client, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow.Add(timeout);
+        while (DateTime.UtcNow < deadline)
         {
             try
             {
-                var resp = await _client.GetAsync("/health");
+                var resp = await client.GetAsync("/health");
                 if (resp.IsSuccessStatusCode) return;
             }
             catch
@@ -87,7 +90,7 @@ public class HealthEndpointTests : IAsyncLifetime
             }
         }
 
-        throw new InvalidOperationException("E2E server bound the port but /health never returned 200 within 15 seconds");
+        throw new InvalidOperationException($"E2E server bound the port but /health never returned 200 within {timeout.TotalSeconds} seconds");
     }
 
     [Fact]
