@@ -134,7 +134,7 @@ if (autoSeed)
     }
 }
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+app.MapHealthEndpoints();
 app.MapTenantEndpoints();
 app.MapCounterpartyEndpoints();
 app.MapContractEndpoints();
@@ -143,6 +143,7 @@ app.MapContractTagEndpoints();
 app.MapContractVersionEndpoints();
 app.MapObligationEndpoints();
 app.MapAlertEndpoints();
+app.MapAnalyticsEndpoints();
 
 app.Run();
 

@@ -2,6 +2,7 @@ using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Services;
 using ContractEngine.Core.Validation;
+using ContractEngine.Infrastructure.Analytics;
 using ContractEngine.Infrastructure.Data;
 using ContractEngine.Infrastructure.Repositories;
 using ContractEngine.Infrastructure.Storage;
@@ -77,6 +78,12 @@ public static class ServiceRegistration
         // future callers. Scoped lifetimes mirror the obligation slice.
         services.AddScoped<IDeadlineAlertRepository, DeadlineAlertRepository>();
         services.AddScoped<DeadlineAlertService>();
+
+        // Analytics (Batch 017) — read-only aggregations. The query surface lives behind
+        // IAnalyticsQueryContext so AnalyticsService stays in Core. Scoped lifetimes — the query
+        // context holds a DbContext reference.
+        services.AddScoped<IAnalyticsQueryContext, EfAnalyticsQueryContext>();
+        services.AddScoped<AnalyticsService>();
 
         // Business-day / holiday calendar (Batch 014). Calculator is a stateless singleton backed
         // by the in-memory cache. Repository is scoped because it holds a DbContext — the
