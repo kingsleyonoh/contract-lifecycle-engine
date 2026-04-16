@@ -4,6 +4,7 @@ using ContractEngine.Core.Services;
 using ContractEngine.Core.Validation;
 using ContractEngine.Infrastructure.Data;
 using ContractEngine.Infrastructure.Repositories;
+using ContractEngine.Infrastructure.Storage;
 using ContractEngine.Infrastructure.Tenancy;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
@@ -49,6 +50,12 @@ public static class ServiceRegistration
         // Contract data access + service layer (Batch 007).
         services.AddScoped<IContractRepository, ContractRepository>();
         services.AddScoped<ContractService>();
+
+        // Contract document storage + data access + service layer (Batch 009).
+        // Storage is a singleton — it holds only the resolved root path and is safe to share.
+        services.AddSingleton<IDocumentStorage, LocalDocumentStorage>();
+        services.AddScoped<IContractDocumentRepository, ContractDocumentRepository>();
+        services.AddScoped<ContractDocumentService>();
 
         // FluentValidation — register validators by assembly scan (Core). New validators
         // placed under ContractEngine.Core.Validation are picked up automatically.

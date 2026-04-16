@@ -62,6 +62,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapTenantEndpoints();
 app.MapCounterpartyEndpoints();
 app.MapContractEndpoints();
+app.MapContractDocumentEndpoints();
 
 app.Run();
 
