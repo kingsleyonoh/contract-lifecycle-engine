@@ -31,6 +31,10 @@ public class ContractDbContext : DbContext
 
     public DbSet<ContractDocument> ContractDocuments => Set<ContractDocument>();
 
+    public DbSet<ContractTag> ContractTags => Set<ContractTag>();
+
+    public DbSet<ContractVersion> ContractVersions => Set<ContractVersion>();
+
     /// <summary>
     /// Registers a tenant-scoped global query filter on the supplied entity type. Call from
     /// <see cref="OnModelCreating"/> for every entity that implements <see cref="ITenantScoped"/>.
@@ -51,6 +55,131 @@ public class ContractDbContext : DbContext
         ConfigureCounterparty(modelBuilder);
         ConfigureContract(modelBuilder);
         ConfigureContractDocument(modelBuilder);
+        ConfigureContractTag(modelBuilder);
+        ConfigureContractVersion(modelBuilder);
+    }
+
+    private void ConfigureContractTag(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ContractTag>();
+        entity.ToTable("contract_tags");
+        entity.HasKey(t => t.Id);
+
+        entity.Property(t => t.Id)
+            .HasColumnName("id")
+            .HasDefaultValueSql("gen_random_uuid()");
+
+        entity.Property(t => t.TenantId)
+            .HasColumnName("tenant_id")
+            .IsRequired();
+
+        entity.Property(t => t.ContractId)
+            .HasColumnName("contract_id")
+            .IsRequired();
+
+        entity.Property(t => t.Tag)
+            .HasColumnName("tag")
+            .HasColumnType("varchar(100)")
+            .IsRequired();
+
+        entity.Property(t => t.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamptz")
+            .HasDefaultValueSql("now()");
+
+        entity.HasOne<Tenant>()
+            .WithMany()
+            .HasForeignKey(t => t.TenantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasOne<Contract>()
+            .WithMany()
+            .HasForeignKey(t => t.ContractId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // PRD §4.12 — UNIQUE (tenant_id, contract_id, tag) prevents duplicate labels on a contract.
+        entity.HasIndex(t => new { t.TenantId, t.ContractId, t.Tag })
+            .IsUnique()
+            .HasDatabaseName("ux_contract_tags_tenant_id_contract_id_tag");
+
+        // Secondary index for "find contracts by tag" lookups.
+        entity.HasIndex(t => new { t.TenantId, t.Tag })
+            .HasDatabaseName("ix_contract_tags_tenant_id_tag");
+
+        ApplyTenantQueryFilter<ContractTag>(modelBuilder);
+    }
+
+    private void ConfigureContractVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ContractVersion>();
+        entity.ToTable("contract_versions");
+        entity.HasKey(v => v.Id);
+
+        entity.Property(v => v.Id)
+            .HasColumnName("id")
+            .HasDefaultValueSql("gen_random_uuid()");
+
+        entity.Property(v => v.TenantId)
+            .HasColumnName("tenant_id")
+            .IsRequired();
+
+        entity.Property(v => v.ContractId)
+            .HasColumnName("contract_id")
+            .IsRequired();
+
+        entity.Property(v => v.VersionNumber)
+            .HasColumnName("version_number")
+            .IsRequired();
+
+        entity.Property(v => v.ChangeSummary)
+            .HasColumnName("change_summary")
+            .HasColumnType("text");
+
+        // JSONB diff_result — same serialisation pattern as Contract.Metadata. Null until the
+        // Phase 2 diff service populates it.
+        var diffJsonOptions = new JsonSerializerOptions();
+        entity.Property(v => v.DiffResult)
+            .HasColumnName("diff_result")
+            .HasColumnType("jsonb")
+            .HasConversion(
+                v => v == null ? null : JsonSerializer.Serialize(v, diffJsonOptions),
+                v => string.IsNullOrEmpty(v)
+                    ? null
+                    : JsonSerializer.Deserialize<Dictionary<string, object>>(v, diffJsonOptions));
+
+        entity.Property(v => v.EffectiveDate)
+            .HasColumnName("effective_date")
+            .HasColumnType("date");
+
+        entity.Property(v => v.CreatedBy)
+            .HasColumnName("created_by")
+            .HasColumnType("varchar(255)");
+
+        entity.Property(v => v.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamptz")
+            .HasDefaultValueSql("now()");
+
+        entity.HasOne<Tenant>()
+            .WithMany()
+            .HasForeignKey(v => v.TenantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasOne<Contract>()
+            .WithMany()
+            .HasForeignKey(v => v.ContractId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // PRD §4.4 — UNIQUE (contract_id, version_number) enforces monotonic version numbering.
+        entity.HasIndex(v => new { v.ContractId, v.VersionNumber })
+            .IsUnique()
+            .HasDatabaseName("ux_contract_versions_contract_id_version_number");
+
+        // Lookup index for paginated history queries.
+        entity.HasIndex(v => new { v.TenantId, v.ContractId, v.VersionNumber })
+            .HasDatabaseName("ix_contract_versions_tenant_id_contract_id_version_number");
+
+        ApplyTenantQueryFilter<ContractVersion>(modelBuilder);
     }
 
     private void ConfigureContractDocument(ModelBuilder modelBuilder)

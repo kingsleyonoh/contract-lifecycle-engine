@@ -57,6 +57,12 @@ public static class ServiceRegistration
         services.AddScoped<IContractDocumentRepository, ContractDocumentRepository>();
         services.AddScoped<ContractDocumentService>();
 
+        // Contract tags + contract versions (Batch 010).
+        services.AddScoped<IContractTagRepository, ContractTagRepository>();
+        services.AddScoped<ContractTagService>();
+        services.AddScoped<IContractVersionRepository, ContractVersionRepository>();
+        services.AddScoped<ContractVersionService>();
+
         // FluentValidation — register validators by assembly scan (Core). New validators
         // placed under ContractEngine.Core.Validation are picked up automatically.
         services.AddValidatorsFromAssemblyContaining<RegisterTenantRequestValidator>();

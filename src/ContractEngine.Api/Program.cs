@@ -63,6 +63,8 @@ app.MapTenantEndpoints();
 app.MapCounterpartyEndpoints();
 app.MapContractEndpoints();
 app.MapContractDocumentEndpoints();
+app.MapContractTagEndpoints();
+app.MapContractVersionEndpoints();
 
 app.Run();
 
