@@ -3,10 +3,15 @@ using ContractEngine.Api.Middleware;
 using ContractEngine.Infrastructure.Configuration;
 using Serilog;
 
-// Only install a bootstrap logger if one has not been pre-seeded (e.g. by the in-process
-// WebApplicationFactory test bootstrap in Api.Tests/RequestLoggingTestFactory). Re-assigning the
-// static Log.Logger on every boot clobbers a test-supplied sink and silently drops log events.
-if (Log.Logger.GetType().Name == "SilentLogger")
+// When a test harness has pre-seeded a non-default Log.Logger (e.g. the Api.Tests
+// RequestLoggingTestFactory installs an InMemoryLogSink before Program runs), respect it:
+// skip bootstrap logger replacement AND skip our Host.UseSerilog wiring so the harness's own
+// UseSerilog(Log.Logger, dispose: false) call from CreateHost wins cleanly. In production,
+// Log.Logger is always the Serilog-default SilentLogger on first run, so this branch is a
+// test-only fast-path.
+var usingTestSuppliedLogger = Log.Logger.GetType().Name != "SilentLogger";
+
+if (!usingTestSuppliedLogger)
 {
     Log.Logger = new Serilog.LoggerConfiguration()
         .WriteTo.Console(new Serilog.Formatting.Compact.CompactJsonFormatter())
@@ -14,10 +19,19 @@ if (Log.Logger.GetType().Name == "SilentLogger")
 }
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseSerilog((context, services, configuration) => configuration
-    .ReadFrom.Configuration(context.Configuration)
-    .WriteTo.Console(new Serilog.Formatting.Compact.CompactJsonFormatter())
-    .Enrich.FromLogContext());
+
+if (!usingTestSuppliedLogger)
+{
+    builder.Host.UseSerilog((context, services, configuration) => configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .WriteTo.Console(new Serilog.Formatting.Compact.CompactJsonFormatter())
+        .Enrich.FromLogContext());
+}
+else
+{
+    // Honour the test-supplied static Log.Logger without introducing a reloadable logger.
+    builder.Host.UseSerilog(Log.Logger, dispose: false);
+}
 
 builder.Services.AddContractEngineInfrastructure(builder.Configuration);
 

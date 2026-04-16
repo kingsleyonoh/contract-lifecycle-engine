@@ -15,6 +15,7 @@ using Xunit;
 
 namespace ContractEngine.Api.Tests.Middleware;
 
+[Collection(WebApplicationCollection.Name)]
 public class RequestLoggingMiddlewareTests : IClassFixture<RequestLoggingTestFactory>
 {
     private readonly RequestLoggingTestFactory _factory;

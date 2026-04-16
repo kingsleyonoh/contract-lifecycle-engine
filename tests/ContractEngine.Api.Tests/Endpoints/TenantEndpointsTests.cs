@@ -20,6 +20,7 @@ namespace ContractEngine.Api.Tests.Endpoints;
 /// <c>SELF_REGISTRATION_ENABLED=false</c> guard, and a round-trip where the returned key
 /// authenticates via <c>X-API-Key</c>.
 /// </summary>
+[Collection(WebApplicationCollection.Name)]
 public class TenantEndpointsTests : IClassFixture<TenantEndpointsTestFactory>
 {
     private readonly TenantEndpointsTestFactory _factory;

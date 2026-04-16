@@ -11,6 +11,7 @@ using Xunit;
 
 namespace ContractEngine.Api.Tests.Middleware;
 
+[Collection(WebApplicationCollection.Name)]
 public class ExceptionHandlingMiddlewareTests : IClassFixture<ExceptionHandlingTestFactory>
 {
     private readonly ExceptionHandlingTestFactory _factory;

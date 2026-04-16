@@ -26,6 +26,7 @@ namespace ContractEngine.Api.Tests.Middleware;
 /// that missing keys do NOT cause the middleware to short-circuit the pipeline (public endpoints
 /// must still work).
 /// </summary>
+[Collection(WebApplicationCollection.Name)]
 public class TenantResolutionMiddlewareTests : IClassFixture<TenantResolutionTestFactory>
 {
     private readonly TenantResolutionTestFactory _factory;
