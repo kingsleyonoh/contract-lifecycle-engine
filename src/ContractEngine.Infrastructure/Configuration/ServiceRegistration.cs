@@ -42,6 +42,10 @@ public static class ServiceRegistration
         services.AddScoped<ITenantRepository, TenantRepository>();
         services.AddScoped<TenantService>();
 
+        // Counterparty data access + service layer.
+        services.AddScoped<ICounterpartyRepository, CounterpartyRepository>();
+        services.AddScoped<CounterpartyService>();
+
         // FluentValidation — register validators by assembly scan (Core). New validators
         // placed under ContractEngine.Core.Validation are picked up automatically.
         services.AddValidatorsFromAssemblyContaining<RegisterTenantRequestValidator>();

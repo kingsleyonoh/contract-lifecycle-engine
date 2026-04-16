@@ -24,6 +24,8 @@ public class ContractDbContext : DbContext
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
 
+    public DbSet<Counterparty> Counterparties => Set<Counterparty>();
+
     /// <summary>
     /// Registers a tenant-scoped global query filter on the supplied entity type. Call from
     /// <see cref="OnModelCreating"/> for every entity that implements <see cref="ITenantScoped"/>.
@@ -41,6 +43,67 @@ public class ContractDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         ConfigureTenant(modelBuilder);
+        ConfigureCounterparty(modelBuilder);
+    }
+
+    private void ConfigureCounterparty(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<Counterparty>();
+        entity.ToTable("counterparties");
+        entity.HasKey(c => c.Id);
+
+        entity.Property(c => c.Id)
+            .HasColumnName("id")
+            .HasDefaultValueSql("gen_random_uuid()");
+
+        entity.Property(c => c.TenantId)
+            .HasColumnName("tenant_id")
+            .IsRequired();
+
+        entity.Property(c => c.Name)
+            .HasColumnName("name")
+            .HasColumnType("varchar(255)")
+            .IsRequired();
+
+        entity.Property(c => c.LegalName)
+            .HasColumnName("legal_name")
+            .HasColumnType("varchar(255)");
+
+        entity.Property(c => c.Industry)
+            .HasColumnName("industry")
+            .HasColumnType("varchar(100)");
+
+        entity.Property(c => c.ContactEmail)
+            .HasColumnName("contact_email")
+            .HasColumnType("varchar(255)");
+
+        entity.Property(c => c.ContactName)
+            .HasColumnName("contact_name")
+            .HasColumnType("varchar(255)");
+
+        entity.Property(c => c.Notes)
+            .HasColumnName("notes")
+            .HasColumnType("text");
+
+        entity.Property(c => c.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamptz")
+            .HasDefaultValueSql("now()");
+
+        entity.Property(c => c.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasColumnType("timestamptz")
+            .HasDefaultValueSql("now()");
+
+        entity.HasOne<Tenant>()
+            .WithMany()
+            .HasForeignKey(c => c.TenantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasIndex(c => new { c.TenantId, c.Name })
+            .HasDatabaseName("ix_counterparties_tenant_id_name");
+
+        ApplyTenantQueryFilter<Counterparty>(modelBuilder);
     }
 
     private static void ConfigureTenant(ModelBuilder modelBuilder)
