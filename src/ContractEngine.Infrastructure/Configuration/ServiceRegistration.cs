@@ -72,6 +72,14 @@ public static class ServiceRegistration
         services.AddScoped<IObligationEventRepository, ObligationEventRepository>();
         services.AddScoped<ObligationService>();
 
+        // Business-day / holiday calendar (Batch 014). Calculator is a stateless singleton backed
+        // by the in-memory cache. Repository is scoped because it holds a DbContext — the
+        // calculator reaches it through a factory so each cache-miss gets a fresh scope.
+        services.AddMemoryCache();
+        services.AddScoped<IHolidayCalendarRepository, HolidayCalendarRepository>();
+        services.AddSingleton<IHolidayCalendarRepositoryFactory, HolidayCalendarRepositoryFactory>();
+        services.AddSingleton<IBusinessDayCalculator, BusinessDayCalculator>();
+
         // FluentValidation — register validators by assembly scan (Core). New validators
         // placed under ContractEngine.Core.Validation are picked up automatically.
         services.AddValidatorsFromAssemblyContaining<RegisterTenantRequestValidator>();

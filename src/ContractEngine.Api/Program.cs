@@ -4,6 +4,8 @@ using ContractEngine.Api.Endpoints;
 using ContractEngine.Api.Middleware;
 using ContractEngine.Api.RateLimiting;
 using ContractEngine.Infrastructure.Configuration;
+using ContractEngine.Infrastructure.Data;
+using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 
 // When a test harness has pre-seeded a non-default Log.Logger (e.g. the Api.Tests
@@ -57,6 +59,25 @@ app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseMiddleware<RequestLoggingMiddleware>();
 app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseRateLimiter();
+
+// AUTO_SEED (default true): populate system-wide holiday calendars on startup. Idempotent — the
+// seeder checks existence before inserting, so repeat boots are no-ops. Guarded by a try/catch so
+// a fresh env without migrations applied (e.g. first-boot CI) fails loudly in logs but still
+// serves the /health endpoint long enough for operators to see the error.
+var autoSeed = builder.Configuration.GetValue("AUTO_SEED", defaultValue: true);
+if (autoSeed)
+{
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ContractEngine.Infrastructure.Data.ContractDbContext>();
+        await HolidayCalendarSeeder.SeedAsync(db);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Holiday calendar seeding skipped (DB not ready?): {Message}", ex.Message);
+    }
+}
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapTenantEndpoints();

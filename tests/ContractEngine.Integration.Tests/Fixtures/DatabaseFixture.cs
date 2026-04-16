@@ -36,6 +36,7 @@ public class DatabaseFixture : IAsyncLifetime
         await EnsureTestDatabaseExistsAsync();
         BuildProvider();
         await ApplyMigrationsAsync();
+        await SeedHolidayCalendarsAsync();
     }
 
     public Task DisposeAsync()
@@ -87,6 +88,14 @@ public class DatabaseFixture : IAsyncLifetime
         using var scope = Provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
         await db.Database.MigrateAsync();
+    }
+
+    private async Task SeedHolidayCalendarsAsync()
+    {
+        // Idempotent: re-runs per fixture initialisation safely skip already-inserted rows.
+        using var scope = Provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
+        await HolidayCalendarSeeder.SeedAsync(db);
     }
 
     private static async Task EnsureTestDatabaseExistsAsync()
