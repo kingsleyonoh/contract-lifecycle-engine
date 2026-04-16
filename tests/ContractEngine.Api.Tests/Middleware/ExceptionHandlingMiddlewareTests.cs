@@ -80,6 +80,41 @@ public class ExceptionHandlingMiddlewareTests : IClassFixture<ExceptionHandlingT
         var requestId = json.RootElement.GetProperty("error").GetProperty("request_id").GetString();
         requestId.Should().NotBeNullOrWhiteSpace();
     }
+
+    [Fact]
+    public async Task ContractTransitionException_Returns422_WithValidNextStatesList()
+    {
+        using var client = _factory.CreateClient();
+
+        var resp = await client.GetAsync("/__tests__/throw/contract-transition");
+
+        resp.StatusCode.Should().Be((HttpStatusCode)422);
+        using var json = await ReadJsonAsync(resp);
+        var error = json.RootElement.GetProperty("error");
+        error.GetProperty("code").GetString().Should().Be("INVALID_TRANSITION");
+        var details = error.GetProperty("details").EnumerateArray().ToList();
+        details.Should().NotBeEmpty();
+        details.Should().Contain(d => d.GetProperty("field").GetString() == "valid_next_states");
+    }
+
+    [Fact]
+    public async Task ObligationTransitionException_Returns422_WithValidNextStatesList()
+    {
+        using var client = _factory.CreateClient();
+
+        var resp = await client.GetAsync("/__tests__/throw/obligation-transition");
+
+        resp.StatusCode.Should().Be((HttpStatusCode)422);
+        using var json = await ReadJsonAsync(resp);
+        var error = json.RootElement.GetProperty("error");
+        error.GetProperty("code").GetString().Should().Be("INVALID_TRANSITION");
+        var details = error.GetProperty("details").EnumerateArray()
+            .Select(d => d.GetProperty("message").GetString()).ToList();
+        // Pending → Fulfilled is invalid; valid next states are active, dismissed, expired.
+        details.Should().Contain("active");
+        details.Should().Contain("dismissed");
+        details.Should().Contain("expired");
+    }
 }
 
 public class ExceptionHandlingTestFactory : WebApplicationFactory<Program>
@@ -111,6 +146,28 @@ public class ExceptionHandlingTestFactory : WebApplicationFactory<Program>
                 endpoints.MapGet("/__tests__/throw/generic", () =>
                 {
                     throw new Exception("boom internal secret should not leak");
+                });
+                endpoints.MapGet("/__tests__/throw/contract-transition", () =>
+                {
+                    throw new ContractEngine.Core.Exceptions.ContractTransitionException(
+                        ContractEngine.Core.Enums.ContractStatus.Draft,
+                        ContractEngine.Core.Enums.ContractStatus.Archived,
+                        new[] { ContractEngine.Core.Enums.ContractStatus.Active });
+                });
+                endpoints.MapGet("/__tests__/throw/obligation-transition", () =>
+                {
+                    // pending cannot go straight to fulfilled. Valid next states from pending
+                    // include Expired (PRD §5.1 cascade), so the route-layer map stays consistent
+                    // with ObligationStateMachine rather than reimplementing the transition list.
+                    throw new ContractEngine.Core.Exceptions.ObligationTransitionException(
+                        ContractEngine.Core.Enums.ObligationStatus.Pending,
+                        ContractEngine.Core.Enums.ObligationStatus.Fulfilled,
+                        new[]
+                        {
+                            ContractEngine.Core.Enums.ObligationStatus.Active,
+                            ContractEngine.Core.Enums.ObligationStatus.Dismissed,
+                            ContractEngine.Core.Enums.ObligationStatus.Expired,
+                        });
                 });
             });
         });

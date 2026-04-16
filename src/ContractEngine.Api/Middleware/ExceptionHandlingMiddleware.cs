@@ -92,16 +92,18 @@ public sealed class ExceptionHandlingMiddleware
             case UnauthorizedAccessException unauthorized:
                 return (401, "UNAUTHORIZED", SafeMessage(unauthorized.Message, "Authentication required"), Array.Empty<ErrorFieldDetail>());
 
-            // MUST precede the generic InvalidOperationException arm — ContractTransitionException
+            // MUST precede the generic InvalidOperationException arm — EntityTransitionException
             // derives from InvalidOperationException, so order here is load-bearing. 422 with a
-            // dedicated code per PRD §5.3 (future Obligation state machine will reuse this envelope).
-            case ContractTransitionException transition:
+            // dedicated code per PRD §5.3. Handles both Contract (Batch 008) and Obligation
+            // (Batch 011) transitions via the shared base class; the base exposes ValidNextStates
+            // as a snake_case string list so the middleware stays enum-agnostic.
+            case EntityTransitionException transition:
             {
                 var details = transition.ValidNextStates
                     .Select(s => new ErrorFieldDetail
                     {
                         Field = "valid_next_states",
-                        Message = s.ToString().ToLowerInvariant(),
+                        Message = s,
                     })
                     .ToList();
                 return (422, "INVALID_TRANSITION", SafeMessage(transition.Message, "Invalid status transition"), details);
