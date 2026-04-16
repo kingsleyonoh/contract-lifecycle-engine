@@ -248,59 +248,74 @@ public sealed class ObligationService
         // Recurring? Spawn the next instance with next_due_date advanced by the interval.
         if (existing.Recurrence is { } rec && rec != ObligationRecurrence.OneTime)
         {
-            var nextDue = ComputeNextDueDate(existing.NextDueDate ?? existing.DeadlineDate, rec);
-            var spawn = new Obligation
-            {
-                Id = Guid.NewGuid(),
-                TenantId = tenantId,
-                ContractId = existing.ContractId,
-                ObligationType = existing.ObligationType,
-                Status = ObligationStatus.Active,
-                Title = existing.Title,
-                Description = existing.Description,
-                ResponsibleParty = existing.ResponsibleParty,
-                // Intentionally null — the spawn is scheduled by next_due_date, not deadline_date.
-                DeadlineDate = null,
-                DeadlineFormula = existing.DeadlineFormula,
-                Recurrence = existing.Recurrence,
-                NextDueDate = nextDue,
-                Amount = existing.Amount,
-                Currency = existing.Currency,
-                AlertWindowDays = existing.AlertWindowDays,
-                GracePeriodDays = existing.GracePeriodDays,
-                BusinessDayCalendar = existing.BusinessDayCalendar,
-                Source = existing.Source,
-                ExtractionJobId = existing.ExtractionJobId,
-                ClauseReference = existing.ClauseReference,
-                Metadata = existing.Metadata is null
-                    ? null
-                    : new Dictionary<string, object>(existing.Metadata),
-                CreatedAt = now,
-                UpdatedAt = now,
-            };
-            await _obligationRepository.AddAsync(spawn, cancellationToken);
-
-            // Provenance event: ties the new row back to its parent. Empty FromStatus signals a
-            // creation event (not a transition) — the audit log still records the lineage.
-            await _eventRepository.AddAsync(new ObligationEvent
-            {
-                Id = Guid.NewGuid(),
-                TenantId = tenantId,
-                ObligationId = spawn.Id,
-                FromStatus = string.Empty,
-                ToStatus = EnumToSnake(ObligationStatus.Active.ToString()),
-                Actor = "system",
-                Reason = $"auto-created from fulfilled parent (recurring): {existing.Id}",
-                Metadata = new Dictionary<string, object>
-                {
-                    ["parent_id"] = existing.Id.ToString(),
-                    ["recurrence"] = EnumToSnake(rec.ToString()),
-                },
-                CreatedAt = now,
-            }, cancellationToken);
+            await SpawnRecurringChildAsync(existing, rec, tenantId, now, cancellationToken);
         }
 
         return existing;
+    }
+
+    /// <summary>
+    /// Creates the next Active instance of a recurring obligation after its parent is fulfilled.
+    /// Copies every scheduling field from <paramref name="parent"/>, advances <c>next_due_date</c>
+    /// by the recurrence interval, and writes a provenance event tying the new row back to the
+    /// parent. Empty <c>FromStatus</c> on the event signals a creation event rather than a
+    /// transition — the audit log still records the lineage.
+    /// </summary>
+    private async Task SpawnRecurringChildAsync(
+        Obligation parent,
+        ObligationRecurrence rec,
+        Guid tenantId,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        var nextDue = ComputeNextDueDate(parent.NextDueDate ?? parent.DeadlineDate, rec);
+        var spawn = new Obligation
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            ContractId = parent.ContractId,
+            ObligationType = parent.ObligationType,
+            Status = ObligationStatus.Active,
+            Title = parent.Title,
+            Description = parent.Description,
+            ResponsibleParty = parent.ResponsibleParty,
+            // Intentionally null — the spawn is scheduled by next_due_date, not deadline_date.
+            DeadlineDate = null,
+            DeadlineFormula = parent.DeadlineFormula,
+            Recurrence = parent.Recurrence,
+            NextDueDate = nextDue,
+            Amount = parent.Amount,
+            Currency = parent.Currency,
+            AlertWindowDays = parent.AlertWindowDays,
+            GracePeriodDays = parent.GracePeriodDays,
+            BusinessDayCalendar = parent.BusinessDayCalendar,
+            Source = parent.Source,
+            ExtractionJobId = parent.ExtractionJobId,
+            ClauseReference = parent.ClauseReference,
+            Metadata = parent.Metadata is null
+                ? null
+                : new Dictionary<string, object>(parent.Metadata),
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        await _obligationRepository.AddAsync(spawn, cancellationToken);
+
+        await _eventRepository.AddAsync(new ObligationEvent
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            ObligationId = spawn.Id,
+            FromStatus = string.Empty,
+            ToStatus = EnumToSnake(ObligationStatus.Active.ToString()),
+            Actor = "system",
+            Reason = $"auto-created from fulfilled parent (recurring): {parent.Id}",
+            Metadata = new Dictionary<string, object>
+            {
+                ["parent_id"] = parent.Id.ToString(),
+                ["recurrence"] = EnumToSnake(rec.ToString()),
+            },
+            CreatedAt = now,
+        }, cancellationToken);
     }
 
     /// <summary>
