@@ -65,6 +65,7 @@ app.MapContractEndpoints();
 app.MapContractDocumentEndpoints();
 app.MapContractTagEndpoints();
 app.MapContractVersionEndpoints();
+app.MapObligationEndpoints();
 
 app.Run();
 

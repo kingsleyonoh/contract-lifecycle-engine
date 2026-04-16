@@ -63,13 +63,14 @@ public static class ServiceRegistration
         services.AddScoped<IContractVersionRepository, ContractVersionRepository>();
         services.AddScoped<ContractVersionService>();
 
-        // Obligation foundation (Batch 011) — entities, state machine, repositories. No
-        // service orchestration yet; that lands in Batch 012 alongside the endpoints.
+        // Obligation foundation (Batch 011) — entities, state machine, repositories.
+        // Batch 012 adds the service orchestration layer + endpoints on top.
         // The state machine is stateless (no fields, no deps) so singleton lifetime is safe and
         // avoids allocating a fresh instance per scope.
         services.AddSingleton<ObligationStateMachine>();
         services.AddScoped<IObligationRepository, ObligationRepository>();
         services.AddScoped<IObligationEventRepository, ObligationEventRepository>();
+        services.AddScoped<ObligationService>();
 
         // FluentValidation — register validators by assembly scan (Core). New validators
         // placed under ContractEngine.Core.Validation are picked up automatically.

@@ -39,4 +39,19 @@ public sealed class ObligationEventRepository : IObligationEventRepository
 
         return query.ApplyCursorAsync(request, cancellationToken);
     }
+
+    public async Task<IReadOnlyList<ObligationEvent>> ListAllByObligationAscAsync(
+        Guid obligationId,
+        CancellationToken cancellationToken = default)
+    {
+        // No pagination — event count per obligation is bounded by the number of lifecycle
+        // transitions (typically < 20). Ascending by (CreatedAt, Id) gives callers a stable
+        // chronological timeline for UI rendering.
+        return await _db.ObligationEvents
+            .AsNoTracking()
+            .Where(e => e.ObligationId == obligationId)
+            .OrderBy(e => e.CreatedAt)
+            .ThenBy(e => e.Id)
+            .ToListAsync(cancellationToken);
+    }
 }

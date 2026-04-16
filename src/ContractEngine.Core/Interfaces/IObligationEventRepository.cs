@@ -22,4 +22,16 @@ public interface IObligationEventRepository
         Guid obligationId,
         PageRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the full ordered-ascending-by-<c>created_at</c> event history for a single obligation.
+    /// Used by <c>ObligationService.GetByIdWithEventsAsync</c> — the obligation detail payload
+    /// inlines the event timeline so a typical UI request is one REST round-trip. Tenant scoping
+    /// still applies via the global query filter. Unlike <see cref="ListByObligationAsync"/> this
+    /// skips pagination because the event history for a single obligation is bounded by the number
+    /// of state transitions (rare &gt; 20 even on long-lived rows).
+    /// </summary>
+    Task<IReadOnlyList<ObligationEvent>> ListAllByObligationAscAsync(
+        Guid obligationId,
+        CancellationToken cancellationToken = default);
 }
