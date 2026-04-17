@@ -125,6 +125,15 @@ public static class ServiceRegistration
         AddInvoiceRecon(services, configuration);
         AddComplianceLedger(services, configuration);
 
+        // Webhook Engine INBOUND integration (Batch 024). The endpoint lives in the API layer; the
+        // infrastructure side just owns the document downloader that streams the signed PDF from
+        // DocuSign / PandaDoc. Registered whenever the webhook endpoint is enabled — the endpoint
+        // guards its own 404 fallback when WEBHOOK_ENGINE_ENABLED=false.
+        AddWebhookEngine(services, configuration);
+
+        // Parser is a pure-function stateless singleton — no DI deps.
+        services.AddSingleton<ContractEngine.Core.Integrations.Webhooks.WebhookPayloadParser>();
+
         return services;
     }
 
@@ -280,6 +289,26 @@ public static class ServiceRegistration
             new ComplianceLedgerNatsPublisher(
                 natsUrl,
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ComplianceLedgerNatsPublisher>>()));
+    }
+
+    /// <summary>
+    /// Wires the inbound Webhook Engine signed-contract downloader (PRD §5.6c). The downloader
+    /// always registers (the endpoint handles its own enabled/disabled gate by returning 404 when
+    /// the feature flag is off), so the typed <see cref="HttpClient"/> + resilience pipeline is
+    /// available any time the Webhook Engine flag is flipped on without a rebuild.
+    ///
+    /// <para>No base URL — the URL comes from the webhook payload itself (signed and time-limited
+    /// by DocuSign / PandaDoc). 60s timeout handles larger signed PDFs while staying well inside
+    /// the webhook-engine ack window.</para>
+    /// </summary>
+    private static void AddWebhookEngine(IServiceCollection services, IConfiguration configuration)
+    {
+        services
+            .AddHttpClient<IWebhookDocumentDownloader, WebhookDocumentDownloader>(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(60);
+            })
+            .AddResilienceHandler("webhook-downloader", ConfigureEcosystemResilience);
     }
 
     /// <summary>

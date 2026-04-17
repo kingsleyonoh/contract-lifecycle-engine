@@ -17,6 +17,12 @@ public static class RateLimitPolicies
     /// endpoint creates DB rows on each invocation and is the primary target for abuse.</summary>
     public const string Public = "public";
 
+    /// <summary>Public webhook ingestion — 100/min (PRD §8b). The upstream Webhook Engine batches
+    /// signed-contract deliveries on completion bursts, so the tighter 5/min Public policy would
+    /// drop legitimate envelopes during large-volume deals. HMAC signature verification gates
+    /// abuse, not rate limiting.</summary>
+    public const string PublicWebhook = "public-webhook";
+
     /// <summary>Read-heavy authenticated endpoints — 100/min.</summary>
     public const string Read100 = "read-100";
 

@@ -20,7 +20,7 @@ namespace ContractEngine.Core.Services;
 /// <see cref="ObligationStatus.Pending"/> — no auto-activation. Humans confirm via the
 /// <c>/api/obligations/{id}/confirm</c> endpoint.</para>
 /// </summary>
-public sealed class ExtractionService
+public class ExtractionService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -62,7 +62,7 @@ public sealed class ExtractionService
     /// (tenant-scoped). If <paramref name="documentId"/> is provided, validates it exists for
     /// this contract. The actual extraction runs asynchronously via ExtractionProcessorJob.
     /// </summary>
-    public async Task<ExtractionJob> TriggerExtractionAsync(
+    public virtual async Task<ExtractionJob> TriggerExtractionAsync(
         Guid contractId,
         string[]? promptTypes,
         Guid? documentId,

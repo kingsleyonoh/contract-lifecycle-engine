@@ -167,6 +167,7 @@ app.MapObligationEndpoints();
 app.MapAlertEndpoints();
 app.MapExtractionEndpoints();
 app.MapAnalyticsEndpoints();
+app.MapWebhookEndpoints();
 
 app.Run();
 

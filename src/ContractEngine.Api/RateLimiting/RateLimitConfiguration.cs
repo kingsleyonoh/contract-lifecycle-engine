@@ -28,6 +28,7 @@ public static class RateLimitConfiguration
         IConfiguration configuration)
     {
         var publicLimit = ReadLimit(configuration, "RATE_LIMIT__PUBLIC", 5);
+        var publicWebhook = ReadLimit(configuration, "RATE_LIMIT__PUBLIC_WEBHOOK", 100);
         var read100 = ReadLimit(configuration, "RATE_LIMIT__READ_100", 100);
         var write50 = ReadLimit(configuration, "RATE_LIMIT__WRITE_50", 50);
         var write20 = ReadLimit(configuration, "RATE_LIMIT__WRITE_20", 20);
@@ -39,6 +40,8 @@ public static class RateLimitConfiguration
 
             options.AddPolicy(RateLimitPolicies.Public, ctx =>
                 CreatePartition(ctx, publicLimit));
+            options.AddPolicy(RateLimitPolicies.PublicWebhook, ctx =>
+                CreatePartition(ctx, publicWebhook));
             options.AddPolicy(RateLimitPolicies.Read100, ctx =>
                 CreatePartition(ctx, read100));
             options.AddPolicy(RateLimitPolicies.Write50, ctx =>
