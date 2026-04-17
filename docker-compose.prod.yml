@@ -2,12 +2,8 @@ services:
   app:
     image: ghcr.io/kingsleyonoh/contract-lifecycle-engine:latest
     restart: unless-stopped
-    # No host port binding — traffic enters via Caddy on 80/443 and reverse-proxies to the
-    # internal Docker network on port 5000. Exposing 5000 publicly would bypass TLS and give
-    # attackers a vector past the rate limiter's per-tenant partitioning (partition keys rely on
-    # the X-API-Key header that Caddy forwards unchanged).
-    expose:
-      - "5000"
+    ports:
+      - "5000:5000"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - DATABASE_URL=${DATABASE_URL}
@@ -39,35 +35,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      - web
-      - internal
     labels:
-      # Lucaslorentz/caddy-docker-proxy auto-config labels. Caddy watches the Docker socket,
-      # sees these labels on any container that shares its network, and generates a Caddyfile
-      # directive automatically. `{{upstreams 5000}}` resolves to `app:5000` on the internal
-      # Docker network.
-      caddy: contracts.kingsleyonoh.com
-      caddy.reverse_proxy: "{{upstreams 5000}}"
-
-  caddy:
-    image: lucaslorentz/caddy-docker-proxy:ci-alpine
-    restart: unless-stopped
-    # Caddy terminates TLS on 443 and redirects plain HTTP 80 → 443 automatically. ACME HTTP-01
-    # challenges also flow through 80 — DO NOT block it at the firewall.
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Caddy needs the Docker socket to watch container labels + a persistent volume for
-      # Let's Encrypt certificates so they survive container restarts.
-      - /var/run/docker.sock:/var/run/docker.sock
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      - CADDY_INGRESS_NETWORKS=web
-    networks:
-      - web
+      - "caddy=contracts.kingsleyonoh.com"
+      - "caddy.reverse_proxy={{upstreams 5000}}"
 
   db:
     image: postgres:16-alpine
@@ -78,8 +48,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-contract_engine}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    networks:
-      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -92,23 +60,10 @@ services:
     command: ["--jetstream", "--store_dir", "/data"]
     volumes:
       - natsdata:/data
-    networks:
-      - internal
     profiles:
       - nats
-
-networks:
-  # External edge network — Caddy + anything it must reverse-proxy.
-  web:
-    driver: bridge
-  # Internal back-plane — app ↔ db ↔ nats. NEVER exposed on the host.
-  internal:
-    driver: bridge
-    internal: false
 
 volumes:
   pgdata:
   natsdata:
   documents:
-  caddy_data:
-  caddy_config:
