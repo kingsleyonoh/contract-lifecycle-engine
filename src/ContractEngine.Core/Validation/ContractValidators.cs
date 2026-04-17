@@ -74,6 +74,18 @@ public sealed class CreateContractRequestValidator : AbstractValidator<CreateCon
             RuleFor(x => x.GoverningLaw!)
                 .MaximumLength(100).WithMessage("governing_law must be 100 characters or fewer");
         });
+
+        // Batch 026 security-audit finding F: public callers MUST NOT set engine-reserved metadata
+        // keys (webhook_envelope_id, webhook_document_id, etc.) — those are load-bearing for webhook
+        // idempotency and provenance. The webhook helper bypasses this validator and writes those
+        // keys directly post-HMAC, so only public-API callers are blocked here.
+        When(x => x.Metadata is { Count: > 0 }, () =>
+        {
+            RuleFor(x => x.Metadata!)
+                .Must(HaveNoReservedMetadataKeys)
+                .OverridePropertyName("metadata")
+                .WithMessage($"metadata keys are reserved by the engine and cannot be set via the public API: {string.Join(", ", ContractMetadataReservedKeys.All)}");
+        });
     }
 
     private static bool HasExactlyOneCounterpartyIdentifier(CreateContractRequest request)
@@ -82,6 +94,9 @@ public sealed class CreateContractRequestValidator : AbstractValidator<CreateCon
         var hasName = !string.IsNullOrWhiteSpace(request.CounterpartyName);
         return hasId ^ hasName;
     }
+
+    private static bool HaveNoReservedMetadataKeys(Dictionary<string, object> metadata) =>
+        !metadata.Keys.Any(k => ContractMetadataReservedKeys.All.Contains(k));
 }
 
 /// <summary>
@@ -151,5 +166,17 @@ public sealed class UpdateContractRequestValidator : AbstractValidator<UpdateCon
             RuleFor(x => x.GoverningLaw!)
                 .MaximumLength(100).WithMessage("governing_law must be 100 characters or fewer");
         });
+
+        // Batch 026 security-audit finding F — same rationale as CreateContractRequestValidator.
+        When(x => x.Metadata is { Count: > 0 }, () =>
+        {
+            RuleFor(x => x.Metadata!)
+                .Must(HaveNoReservedMetadataKeys)
+                .OverridePropertyName("metadata")
+                .WithMessage($"metadata keys are reserved by the engine and cannot be set via the public API: {string.Join(", ", ContractMetadataReservedKeys.All)}");
+        });
     }
+
+    private static bool HaveNoReservedMetadataKeys(Dictionary<string, object> metadata) =>
+        !metadata.Keys.Any(k => ContractMetadataReservedKeys.All.Contains(k));
 }

@@ -6,6 +6,7 @@ using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
 using ContractEngine.Core.Services;
 using FluentAssertions;
+using FluentValidation;
 using NSubstitute;
 using Xunit;
 
@@ -150,5 +151,115 @@ public class ContractDocumentServiceTests
 
         page.Should().NotBeNull();
         await docRepo.Received(1).ListByContractAsync(contractId, Arg.Any<PageRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    // Batch 026 security-audit finding D: MIME whitelist on contract document upload. Blank MIME
+    // is accepted (back-compat for webhook-driven uploads with no content-type header); any
+    // explicit MIME that isn't on the whitelist raises ValidationException → 400 at the API.
+
+    [Theory]
+    [InlineData("application/pdf")]
+    [InlineData("application/msword")]
+    [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.document")]
+    [InlineData("application/vnd.ms-excel")]
+    [InlineData("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")]
+    [InlineData("application/rtf")]
+    [InlineData("application/octet-stream")]
+    [InlineData("text/plain")]
+    [InlineData("text/csv")]
+    [InlineData("text/markdown")]
+    public async Task UploadAsync_WithWhitelistedMime_Succeeds(string mimeType)
+    {
+        var (service, docRepo, contractRepo, storage, _) = BuildHarness();
+        var contractId = Guid.NewGuid();
+        contractRepo.GetByIdAsync(contractId).Returns(new Contract
+        {
+            Id = contractId,
+            TenantId = TenantA,
+            Status = ContractStatus.Active,
+        });
+        storage.SaveAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>())
+            .Returns(new DocumentStorageResult($"{TenantA}/{contractId}/file", 8));
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes("content_"));
+        var document = await service.UploadAsync(contractId, "file", mimeType, stream, uploadedBy: null);
+
+        document.MimeType.Should().Be(mimeType);
+    }
+
+    [Theory]
+    [InlineData("text/html")]
+    [InlineData("application/javascript")]
+    [InlineData("text/javascript")]
+    [InlineData("application/x-msdownload")]
+    [InlineData("application/x-sh")]
+    [InlineData("image/svg+xml")]
+    [InlineData("application/zip")]
+    public async Task UploadAsync_WithBlacklistedMime_RaisesValidationException(string mimeType)
+    {
+        var (service, docRepo, contractRepo, storage, _) = BuildHarness();
+        var contractId = Guid.NewGuid();
+        contractRepo.GetByIdAsync(contractId).Returns(new Contract
+        {
+            Id = contractId,
+            TenantId = TenantA,
+            Status = ContractStatus.Active,
+        });
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes("x"));
+        var act = () => service.UploadAsync(contractId, "file", mimeType, stream, uploadedBy: null);
+
+        var ex = (await act.Should().ThrowAsync<ValidationException>()).Which;
+        ex.Errors.Should().ContainSingle(e => e.PropertyName == "mime_type");
+
+        // Service must short-circuit BEFORE the storage write — we don't want attacker bytes on disk
+        // just because the MIME check happened post-save.
+        await storage.DidNotReceive().SaveAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UploadAsync_WithMimeParameters_StripsAndValidatesAgainstWhitelist()
+    {
+        // "application/pdf; charset=utf-8" should normalise to "application/pdf" and pass.
+        var (service, docRepo, contractRepo, storage, _) = BuildHarness();
+        var contractId = Guid.NewGuid();
+        contractRepo.GetByIdAsync(contractId).Returns(new Contract
+        {
+            Id = contractId,
+            TenantId = TenantA,
+            Status = ContractStatus.Active,
+        });
+        storage.SaveAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>())
+            .Returns(new DocumentStorageResult($"{TenantA}/{contractId}/doc.pdf", 3));
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes("pdf"));
+        var document = await service.UploadAsync(contractId, "doc.pdf", "application/pdf; charset=utf-8", stream, uploadedBy: null);
+
+        document.MimeType.Should().Be("application/pdf",
+            "the MIME-parameter suffix must be stripped before persistence so downstream filters match");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task UploadAsync_WithBlankMime_IsAcceptedForBackCompat(string? mimeType)
+    {
+        var (service, docRepo, contractRepo, storage, _) = BuildHarness();
+        var contractId = Guid.NewGuid();
+        contractRepo.GetByIdAsync(contractId).Returns(new Contract
+        {
+            Id = contractId,
+            TenantId = TenantA,
+            Status = ContractStatus.Active,
+        });
+        storage.SaveAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>())
+            .Returns(new DocumentStorageResult($"{TenantA}/{contractId}/file", 5));
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes("bytes"));
+        var document = await service.UploadAsync(contractId, "file", mimeType, stream, uploadedBy: null);
+
+        document.MimeType.Should().BeNull(
+            "webhook-driven uploads pass no content-type header, so we persist null instead of rejecting");
     }
 }

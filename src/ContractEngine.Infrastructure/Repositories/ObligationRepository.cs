@@ -109,6 +109,37 @@ public sealed class ObligationRepository : IObligationRepository
         return _db.Obligations.CountAsync(o => o.ContractId == contractId, cancellationToken);
     }
 
+    public async Task<IReadOnlyDictionary<Guid, int>> CountByContractIdsAsync(
+        IReadOnlyCollection<Guid> contractIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (contractIds is null || contractIds.Count == 0)
+        {
+            return new Dictionary<Guid, int>();
+        }
+
+        // GROUP BY + COUNT in one round-trip. The global query filter on Obligation already
+        // enforces tenant isolation, so the caller's tenant is implicit.
+        var grouped = await _db.Obligations
+            .Where(o => contractIds.Contains(o.ContractId))
+            .GroupBy(o => o.ContractId)
+            .Select(g => new { ContractId = g.Key, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        // Seed every requested id with 0 so callers never have to null-check. Contracts that had
+        // no obligations simply don't appear in the grouped result — we write them in afterwards.
+        var result = new Dictionary<Guid, int>(contractIds.Count);
+        foreach (var id in contractIds)
+        {
+            result[id] = 0;
+        }
+        foreach (var entry in grouped)
+        {
+            result[entry.ContractId] = entry.Count;
+        }
+        return result;
+    }
+
     private static bool TryParseResponsibleParty(string raw, out ResponsibleParty parsed)
     {
         switch (raw.Trim().ToLowerInvariant())

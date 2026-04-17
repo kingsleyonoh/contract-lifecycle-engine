@@ -55,6 +55,11 @@ public static class SentryPrivacyFilter
         "password",
         "secret",
         "token",
+        "auth",
+        "credential",
+        "bearer",
+        "private_key",
+        "privatekey",
     };
 
     /// <summary>
@@ -80,8 +85,10 @@ public static class SentryPrivacyFilter
 
     /// <summary>
     /// Scrub an extras dictionary in-place. Recurses into nested
-    /// <see cref="IDictionary{TKey,TValue}"/> values so secrets hidden inside structured
-    /// payloads are also redacted.
+    /// <see cref="IDictionary{TKey,TValue}"/> values AND <see cref="IList{T}"/> collections so
+    /// secrets hidden inside structured payloads (e.g. <c>{"items":[{"token":"…"}]}</c>)
+    /// are also redacted — webhook breadcrumbs and extraction payloads regularly arrive as
+    /// arrays of dictionaries, not just flat maps.
     /// </summary>
     public static void Scrub(IDictionary<string, object?> extras)
     {
@@ -102,6 +109,31 @@ public static class SentryPrivacyFilter
             if (extras[key] is IDictionary<string, object?> nested)
             {
                 Scrub(nested);
+            }
+            else if (extras[key] is IList<object?> nestedList)
+            {
+                ScrubList(nestedList);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Recursive list walker. Called from the dictionary overload whenever a value is a
+    /// list of objects. Lists of primitives (strings, numbers) are left alone — we can't
+    /// tell which element is sensitive without a key. Only dictionary/list elements are
+    /// descended so `[{"token":"…"}]` gets scrubbed but `["hello","world"]` is untouched.
+    /// </summary>
+    private static void ScrubList(IList<object?> list)
+    {
+        foreach (var item in list)
+        {
+            if (item is IDictionary<string, object?> nestedDict)
+            {
+                Scrub(nestedDict);
+            }
+            else if (item is IList<object?> nestedList)
+            {
+                ScrubList(nestedList);
             }
         }
     }

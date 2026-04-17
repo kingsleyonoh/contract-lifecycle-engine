@@ -125,4 +125,126 @@ public class SentryPrivacyFilterTests
         headers["X-Request-Id"].Should().Be("req_abc123");
         headers["X-Forwarded-For"].Should().Be("203.0.113.4");
     }
+
+    [Theory]
+    [InlineData("auth")]
+    [InlineData("user_auth_code")]
+    [InlineData("credential")]
+    [InlineData("my_credentials")]
+    [InlineData("bearer")]
+    [InlineData("BearerToken")]
+    [InlineData("private_key")]
+    [InlineData("privateKey")]
+    [InlineData("privatekey")]
+    public void Scrub_redacts_keys_matching_new_fragment_list(string sensitiveKey)
+    {
+        // Batch-026 security audit finding G: `SensitiveKeyFragments` was extended with
+        // `auth`, `credential`, `bearer`, `private_key`/`privatekey` so OAuth flows and
+        // certificate handshakes don't leak into Sentry extras. Exercise each fragment.
+        var extras = new Dictionary<string, object?>
+        {
+            [sensitiveKey] = "some_sensitive_value",
+            ["unrelated"] = "keep_me",
+        };
+
+        SentryPrivacyFilter.Scrub(extras);
+
+        extras[sensitiveKey].Should().Be(SentryPrivacyFilter.RedactedMarker);
+        extras["unrelated"].Should().Be("keep_me");
+    }
+
+    [Fact]
+    public void Scrub_recurses_into_nested_lists_of_dictionaries()
+    {
+        // Webhook breadcrumb dumps and extraction payloads regularly arrive as arrays of
+        // dictionaries (e.g. `items: [{ token: "..." }]`). Pre-audit the scrubber only
+        // walked nested IDictionary — lists got a free pass. Finding G extends recursion
+        // into IList<object?> so array-of-map payloads are scrubbed too.
+        var extras = new Dictionary<string, object?>
+        {
+            ["items"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["token"] = "inner_secret_1",
+                    ["user"] = "alice",
+                },
+                new Dictionary<string, object?>
+                {
+                    ["api_key"] = "inner_secret_2",
+                    ["user"] = "bob",
+                },
+            },
+        };
+
+        SentryPrivacyFilter.Scrub(extras);
+
+        var items = extras["items"] as IList<object?>;
+        items.Should().NotBeNull();
+        items.Should().HaveCount(2);
+
+        var first = items![0] as IDictionary<string, object?>;
+        first.Should().NotBeNull();
+        first!["token"].Should().Be(SentryPrivacyFilter.RedactedMarker);
+        first["user"].Should().Be("alice");
+
+        var second = items[1] as IDictionary<string, object?>;
+        second.Should().NotBeNull();
+        second!["api_key"].Should().Be(SentryPrivacyFilter.RedactedMarker);
+        second["user"].Should().Be("bob");
+    }
+
+    [Fact]
+    public void Scrub_recurses_into_nested_lists_of_lists()
+    {
+        // Defensive: if a caller nests lists two deep (e.g. a paginated page of event
+        // batches), we still descend. Primitives inside remain untouched — there's no key
+        // to predicate on, so we can't redact a raw string in a list.
+        var extras = new Dictionary<string, object?>
+        {
+            ["batches"] = new List<object?>
+            {
+                new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["password"] = "nested_deep",
+                    },
+                    "primitive_value",
+                },
+            },
+        };
+
+        SentryPrivacyFilter.Scrub(extras);
+
+        var outer = extras["batches"] as IList<object?>;
+        outer.Should().NotBeNull();
+        var inner = outer![0] as IList<object?>;
+        inner.Should().NotBeNull();
+        var dict = inner![0] as IDictionary<string, object?>;
+        dict.Should().NotBeNull();
+        dict!["password"].Should().Be(SentryPrivacyFilter.RedactedMarker);
+        inner[1].Should().Be("primitive_value",
+            "primitives inside lists have no key to predicate on, so we leave them alone");
+    }
+
+    [Fact]
+    public void ShouldScrubKey_returns_false_for_whitespace_or_null_keys()
+    {
+        SentryPrivacyFilter.ShouldScrubKey("").Should().BeFalse();
+        SentryPrivacyFilter.ShouldScrubKey("   ").Should().BeFalse();
+        SentryPrivacyFilter.ShouldScrubKey(null!).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Scrub_is_null_safe_for_null_header_and_extras_dicts()
+    {
+        // No-op, no throw — matches what the Program.cs adapter sees when Sentry hands us
+        // a request with no body or no headers at all.
+        var act1 = () => SentryPrivacyFilter.Scrub((IDictionary<string, string>)null!);
+        var act2 = () => SentryPrivacyFilter.Scrub((IDictionary<string, object?>)null!);
+
+        act1.Should().NotThrow();
+        act2.Should().NotThrow();
+    }
 }

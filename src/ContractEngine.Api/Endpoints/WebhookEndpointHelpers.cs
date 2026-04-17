@@ -118,7 +118,9 @@ internal static class WebhookEndpointHelpers
         SignedContractPayload payload,
         CancellationToken ct)
     {
-        var idempotencyKey = payload.Source == "docusign" ? "webhook_envelope_id" : "webhook_document_id";
+        var idempotencyKey = payload.Source == "docusign"
+            ? ContractMetadataReservedKeys.WebhookEnvelopeId
+            : ContractMetadataReservedKeys.WebhookDocumentId;
         var idempotencyProbe = $"{{\"{idempotencyKey}\":\"{payload.ExternalId}\"}}";
 
         return dbContext.Contracts
@@ -135,17 +137,19 @@ internal static class WebhookEndpointHelpers
         SignedContractPayload payload,
         CancellationToken ct)
     {
-        var idempotencyKey = payload.Source == "docusign" ? "webhook_envelope_id" : "webhook_document_id";
+        var idempotencyKey = payload.Source == "docusign"
+            ? ContractMetadataReservedKeys.WebhookEnvelopeId
+            : ContractMetadataReservedKeys.WebhookDocumentId;
 
         var metadata = new Dictionary<string, object>
         {
             [idempotencyKey] = payload.ExternalId,
-            ["webhook_source"] = payload.Source,
-            ["webhook_received_at"] = DateTime.UtcNow.ToString("O"),
+            [ContractMetadataReservedKeys.WebhookSource] = payload.Source,
+            [ContractMetadataReservedKeys.WebhookReceivedAt] = DateTime.UtcNow.ToString("O"),
         };
         if (payload.CompletedAt is { } completed)
         {
-            metadata["signed_completed_at"] = completed.ToString("O");
+            metadata[ContractMetadataReservedKeys.SignedCompletedAt] = completed.ToString("O");
         }
 
         return contractService.CreateAsync(new CreateContractRequest

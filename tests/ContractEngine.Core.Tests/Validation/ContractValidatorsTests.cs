@@ -224,4 +224,71 @@ public class ContractValidatorsTests
         var result = _update.Validate(new UpdateContractRequest { AutoRenewalPeriodMonths = 0 });
         result.IsValid.Should().BeFalse();
     }
+
+    // Batch 026 security-audit finding F — public callers must not set engine-reserved metadata
+    // keys. Webhook redeliveries stamp `webhook_envelope_id` etc. for idempotency; if a public
+    // caller could set them, they could collide with (or pre-empt) a future webhook.
+
+    [Theory]
+    [InlineData("webhook_envelope_id")]
+    [InlineData("webhook_document_id")]
+    [InlineData("webhook_source")]
+    [InlineData("webhook_received_at")]
+    [InlineData("signed_completed_at")]
+    [InlineData("Webhook_Envelope_Id")] // case-insensitive
+    public void Create_WithReservedMetadataKey_Fails(string reservedKey)
+    {
+        var request = new CreateContractRequest
+        {
+            Title = "test",
+            CounterpartyName = "Acme",
+            Metadata = new Dictionary<string, object>
+            {
+                [reservedKey] = "attacker-controlled-value",
+            },
+        };
+
+        var result = _create.Validate(request);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "metadata");
+    }
+
+    [Fact]
+    public void Create_WithNonReservedMetadata_Passes()
+    {
+        var request = new CreateContractRequest
+        {
+            Title = "test",
+            CounterpartyName = "Acme",
+            Metadata = new Dictionary<string, object>
+            {
+                ["custom_tag"] = "tenant-set-value",
+                ["priority"] = 5,
+            },
+        };
+
+        var result = _create.Validate(request);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("webhook_envelope_id")]
+    [InlineData("signed_completed_at")]
+    public void Update_WithReservedMetadataKey_Fails(string reservedKey)
+    {
+        var request = new UpdateContractRequest
+        {
+            Metadata = new Dictionary<string, object>
+            {
+                [reservedKey] = "hijack-attempt",
+            },
+        };
+
+        var result = _update.Validate(request);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "metadata");
+    }
 }

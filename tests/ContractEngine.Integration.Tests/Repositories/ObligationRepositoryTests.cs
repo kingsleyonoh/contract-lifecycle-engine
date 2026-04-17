@@ -244,6 +244,59 @@ public class ObligationRepositoryTests
         count.Should().Be(0, "tenant filter hides rows belonging to another tenant");
     }
 
+    // Batch 026 security-audit finding I: the list endpoint batch-fetches obligation counts in one
+    // round-trip rather than N+1. Contracts with zero obligations must appear in the result with
+    // value 0 so callers don't have to null-check; cross-tenant rows must be hidden by the filter.
+
+    [Fact]
+    public async Task CountByContractIdsAsync_EmptyInput_ReturnsEmptyDictionary()
+    {
+        var (tenantId, _) = await SeedContractAsync();
+        using var scope = ScopeFor(tenantId);
+        var repo = scope.ServiceProvider.GetRequiredService<IObligationRepository>();
+
+        var result = await repo.CountByContractIdsAsync(Array.Empty<Guid>());
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CountByContractIdsAsync_MixedContracts_ReturnsPerContractCounts()
+    {
+        var (tenantId, contractA) = await SeedContractAsync();
+        var contractB = await SeedAdditionalContractAsync(tenantId);
+        var contractC = await SeedAdditionalContractAsync(tenantId); // no obligations — expect 0
+
+        await SeedObligationAsync(tenantId, contractA, ObligationStatus.Active, ObligationType.Payment);
+        await SeedObligationAsync(tenantId, contractA, ObligationStatus.Pending, ObligationType.Reporting);
+        await SeedObligationAsync(tenantId, contractB, ObligationStatus.Active, ObligationType.Payment);
+
+        using var scope = ScopeFor(tenantId);
+        var repo = scope.ServiceProvider.GetRequiredService<IObligationRepository>();
+
+        var result = await repo.CountByContractIdsAsync(new[] { contractA, contractB, contractC });
+
+        result[contractA].Should().Be(2);
+        result[contractB].Should().Be(1);
+        result[contractC].Should().Be(0, "contracts with zero obligations must still appear with value 0");
+    }
+
+    [Fact]
+    public async Task CountByContractIdsAsync_CrossTenantIds_ReturnsZeroForForeignContracts()
+    {
+        var (tenantA, contractA) = await SeedContractAsync();
+        var (tenantB, contractB) = await SeedContractAsync();
+        await SeedObligationAsync(tenantA, contractA, ObligationStatus.Active, ObligationType.Payment);
+        await SeedObligationAsync(tenantB, contractB, ObligationStatus.Active, ObligationType.Payment);
+
+        using var scope = ScopeFor(tenantA);
+        var repo = scope.ServiceProvider.GetRequiredService<IObligationRepository>();
+
+        var result = await repo.CountByContractIdsAsync(new[] { contractA, contractB });
+
+        result[contractA].Should().Be(1);
+        result[contractB].Should().Be(0, "global query filter hides other tenants' obligations");
+    }
+
     private IServiceScope ScopeFor(Guid tenantId) =>
         _fixture.CreateScope(services =>
             services.AddScoped<ITenantContext>(_ => new FixedTenantContext(tenantId)));

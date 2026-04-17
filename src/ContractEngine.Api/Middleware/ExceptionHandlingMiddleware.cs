@@ -2,6 +2,7 @@ using System.Text.Json;
 using ContractEngine.Core.Exceptions;
 using FluentValidation;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 
 namespace ContractEngine.Api.Middleware;
@@ -85,6 +86,27 @@ public sealed class ExceptionHandlingMiddleware
                     .ToList();
                 return (400, "VALIDATION_ERROR", "One or more validation errors occurred", details);
             }
+
+            // JSON parse errors and minimal-API model-bind failures come through as JsonException
+            // or BadHttpRequestException. Both are caller mistakes (malformed body, unknown field
+            // when UnmappedMemberHandling=Disallow), so we normalise them into the same 400
+            // VALIDATION_ERROR envelope rather than letting the framework serialise a bare
+            // ProblemDetails body outside our error-envelope contract.
+            case JsonException jsonEx:
+            {
+                var details = string.IsNullOrWhiteSpace(jsonEx.Path)
+                    ? Array.Empty<ErrorFieldDetail>()
+                    : new[] { new ErrorFieldDetail { Field = jsonEx.Path!, Message = "field is not accepted by this endpoint" } };
+                return (400, "VALIDATION_ERROR",
+                    SafeMessage(jsonEx.Message, "Request body is not valid JSON"),
+                    details);
+            }
+
+            case BadHttpRequestException badRequest:
+                return (badRequest.StatusCode is > 0 ? badRequest.StatusCode : 400,
+                    "VALIDATION_ERROR",
+                    SafeMessage(badRequest.Message, "Request could not be parsed"),
+                    Array.Empty<ErrorFieldDetail>());
 
             case KeyNotFoundException notFound:
                 return (404, "NOT_FOUND", SafeMessage(notFound.Message, "Resource not found"), Array.Empty<ErrorFieldDetail>());

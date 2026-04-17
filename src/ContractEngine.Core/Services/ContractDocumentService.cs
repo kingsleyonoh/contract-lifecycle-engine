@@ -3,6 +3,8 @@ using ContractEngine.Core.Enums;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
+using FluentValidation;
+using FluentValidation.Results;
 
 namespace ContractEngine.Core.Services;
 
@@ -21,6 +23,29 @@ namespace ContractEngine.Core.Services;
 /// </summary>
 public sealed class ContractDocumentService
 {
+    /// <summary>
+    /// MIME whitelist for contract document uploads (security-audit finding D, 2026-04-17). Keeps
+    /// obvious attack-surface media types (HTML, JS, executable archives) out of our object store.
+    /// Callers pass a client-declared Content-Type — we treat a missing / blank value as acceptable
+    /// (back-compat with webhook-driven uploads that don't know the type) but reject any explicit
+    /// MIME that isn't on this list with a <see cref="ArgumentException"/> which the API middleware
+    /// maps to a 400 VALIDATION_ERROR. Matching is case-insensitive and strips parameters (e.g.
+    /// <c>"application/pdf; charset=utf-8"</c> → <c>"application/pdf"</c>).
+    /// </summary>
+    internal static readonly IReadOnlySet<string> AllowedMimeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/rtf",
+        "application/octet-stream",
+        "text/plain",
+        "text/csv",
+        "text/markdown",
+    };
+
     private readonly IContractDocumentRepository _repository;
     private readonly IContractRepository _contractRepository;
     private readonly IDocumentStorage _storage;
@@ -55,6 +80,22 @@ public sealed class ContractDocumentService
             throw new ArgumentException("fileName is required", nameof(fileName));
         }
 
+        // MIME whitelist — blank is fine (back-compat path used by webhook-driven uploads where we
+        // fetch the bytes without a content-type header). An explicit MIME that isn't on the list
+        // is rejected at the service boundary rather than in the endpoint so CLI/background-job
+        // callers get the same guard. Raising ValidationException gives the API middleware a 400
+        // envelope with the `mime_type` field populated in `details[]`.
+        var normalizedMime = NormalizeMime(mimeType);
+        if (normalizedMime is not null && !AllowedMimeTypes.Contains(normalizedMime))
+        {
+            throw new ValidationException(new[]
+            {
+                new ValidationFailure(
+                    "mime_type",
+                    $"MIME type '{normalizedMime}' is not permitted. Allowed: pdf, docx, xlsx, rtf, txt, csv, md, or leave Content-Type blank."),
+            });
+        }
+
         var tenantId = RequireTenantId();
 
         var contract = await _contractRepository.GetByIdAsync(contractId, cancellationToken);
@@ -79,7 +120,7 @@ public sealed class ContractDocumentService
             FileName = fileName,
             FilePath = saved.RelativePath,
             FileSizeBytes = saved.SizeBytes,
-            MimeType = string.IsNullOrWhiteSpace(mimeType) ? null : mimeType.Trim(),
+            MimeType = normalizedMime,
             VersionNumber = null,
             UploadedBy = string.IsNullOrWhiteSpace(uploadedBy) ? null : uploadedBy.Trim(),
             CreatedAt = DateTime.UtcNow,
@@ -127,5 +168,22 @@ public sealed class ContractDocumentService
             throw new UnauthorizedAccessException("API key required");
         }
         return _tenantContext.TenantId.Value;
+    }
+
+    /// <summary>
+    /// Strip MIME-type parameters (everything after the first <c>;</c>) and trim whitespace so
+    /// <c>"application/pdf; charset=utf-8"</c> matches against the whitelist's <c>"application/pdf"</c>.
+    /// Returns null for null/blank input — the caller treats that as "no declared MIME, accept".
+    /// </summary>
+    private static string? NormalizeMime(string? mimeType)
+    {
+        if (string.IsNullOrWhiteSpace(mimeType))
+        {
+            return null;
+        }
+
+        var trimmed = mimeType.Trim();
+        var semicolonIdx = trimmed.IndexOf(';');
+        return (semicolonIdx >= 0 ? trimmed[..semicolonIdx] : trimmed).Trim();
     }
 }

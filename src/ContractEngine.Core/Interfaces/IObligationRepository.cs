@@ -35,4 +35,15 @@ public interface IObligationRepository
     /// ContractService when rendering obligation counts on the contract detail view (Batch 012).
     /// </summary>
     Task<int> CountByContractAsync(Guid contractId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Batch counts obligations for a set of contracts in a single round-trip. Returns a
+    /// dictionary keyed by <paramref name="contractIds"/> — contracts with zero obligations are
+    /// present with value 0 (the caller never has to handle missing keys). Used by the contract
+    /// list endpoint so per-page rendering doesn't fan out into N+1 count queries.
+    /// Batch 026 security-audit finding I: wires the real count into list responses.
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, int>> CountByContractIdsAsync(
+        IReadOnlyCollection<Guid> contractIds,
+        CancellationToken cancellationToken = default);
 }

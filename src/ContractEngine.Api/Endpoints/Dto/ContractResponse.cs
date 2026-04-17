@@ -4,10 +4,11 @@ using ContractEngine.Core.Enums;
 namespace ContractEngine.Api.Endpoints.Dto;
 
 /// <summary>
-/// Wire shape returned by every contract endpoint. <c>obligations_count</c> is stubbed to 0 and
-/// <c>latest_version</c> mirrors <c>current_version</c> until the Obligations and ContractVersions
-/// modules ship (Batches 008+). Both fields are present today so SDK clients generated from the
-/// OpenAPI spec don't break on later schema drift.
+/// Wire shape returned by every contract endpoint. <c>obligations_count</c> is the live count of
+/// obligations bound to this contract (Batch 026 security-audit finding I — the field was
+/// previously stubbed to 0). <c>latest_version</c> mirrors <c>current_version</c>; an explicit
+/// "head version" diverges from <c>current_version</c> only when ContractVersionService publishes
+/// a new draft ahead of the activation pointer — no such path exists today.
 /// </summary>
 public sealed class ContractResponse
 {

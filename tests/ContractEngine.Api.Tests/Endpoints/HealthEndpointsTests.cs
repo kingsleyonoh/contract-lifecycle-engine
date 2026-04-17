@@ -71,6 +71,32 @@ public class HealthEndpointsTests : IClassFixture<HealthEndpointsTestFactory>
         integrations.GetProperty("workflow").GetBoolean().Should().BeFalse();
         integrations.GetProperty("invoice").GetBoolean().Should().BeFalse();
     }
+
+    // Batch 026 security-audit finding H: the public-safe /health/basic endpoint MUST return
+    // a neutral { status } body only — no topology, no integration flags, no DB latency. That
+    // guarantee is what makes it safe to point external uptime monitors / load balancers at.
+    [Fact]
+    public async Task HealthBasic_WithoutApiKey_Returns200WithStatusOnly_NoTopology()
+    {
+        using var client = _factory.CreateClient();
+        var resp = await client.GetAsync("/health/basic");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        root.GetProperty("status").GetString().Should().Be("ready");
+
+        // Guard: must NOT leak topology. Any of these properties appearing here would make
+        // /health/basic a direct fingerprint source — the whole point of this endpoint is that
+        // it reveals nothing beyond up/down.
+        root.TryGetProperty("integrations", out _).Should().BeFalse();
+        root.TryGetProperty("database", out _).Should().BeFalse();
+        root.TryGetProperty("latency_ms", out _).Should().BeFalse();
+
+        // Enumerate to be extra-strict: the body must be exactly one property.
+        root.EnumerateObject().Should().HaveCount(1);
+    }
 }
 
 public class HealthEndpointsTestFactory : WebApplicationFactory<Program>

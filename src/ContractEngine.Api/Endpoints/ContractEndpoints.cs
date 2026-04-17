@@ -2,6 +2,7 @@ using ContractEngine.Api.Endpoints.Dto;
 using ContractEngine.Api.RateLimiting;
 using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Enums;
+using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
 using ContractEngine.Core.Services;
@@ -53,6 +54,7 @@ public static class ContractEndpoints
     private static async Task<IResult> CreateAsync(
         CreateContractRequestWire request,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         IValidator<CreateContractRequest> validator,
         CancellationToken cancellationToken)
@@ -67,13 +69,18 @@ public static class ContractEndpoints
         }
 
         var contract = await service.CreateAsync(domain, cancellationToken);
-        var response = MapToResponse(contract);
+        // Batch 026 finding I: fetch the real obligations_count. On create this is always 0, but
+        // going through the repository keeps the mapping path single-sourced (no "special-cased
+        // zero for create" drift).
+        var count = await obligationRepository.CountByContractAsync(contract.Id, cancellationToken);
+        var response = MapToResponse(contract, count);
         return Results.Created($"/api/contracts/{contract.Id}", response);
     }
 
     private static async Task<IResult> ListAsync(
         HttpContext httpContext,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         string? status,
         Guid? counterparty_id,
@@ -102,7 +109,15 @@ public static class ContractEndpoints
         };
 
         var page = await service.ListAsync(filters, pageRequest, cancellationToken);
-        var mappedItems = page.Data.Select(MapToResponse).ToList();
+
+        // Batch 026 finding I: batch-fetch obligations_count for the whole page in one round-trip
+        // (GROUP BY contract_id). Avoids N+1 when callers use the max page size of 100.
+        var contractIds = page.Data.Select(c => c.Id).ToList();
+        var counts = await obligationRepository.CountByContractIdsAsync(contractIds, cancellationToken);
+
+        var mappedItems = page.Data
+            .Select(c => MapToResponse(c, counts.TryGetValue(c.Id, out var n) ? n : 0))
+            .ToList();
         var mappedPage = new PagedResult<ContractResponse>(mappedItems, page.Pagination);
         return Results.Ok(ContractListResponse.FromPagedResult(mappedPage));
     }
@@ -110,6 +125,7 @@ public static class ContractEndpoints
     private static async Task<IResult> GetByIdAsync(
         Guid id,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         CancellationToken cancellationToken)
     {
@@ -121,13 +137,15 @@ public static class ContractEndpoints
             return Results.NotFound();
         }
 
-        return Results.Ok(MapToResponse(contract));
+        var count = await obligationRepository.CountByContractAsync(contract.Id, cancellationToken);
+        return Results.Ok(MapToResponse(contract, count));
     }
 
     private static async Task<IResult> PatchAsync(
         Guid id,
         UpdateContractRequestWire request,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         IValidator<UpdateContractRequest> validator,
         CancellationToken cancellationToken)
@@ -156,13 +174,15 @@ public static class ContractEndpoints
             return Results.NotFound();
         }
 
-        return Results.Ok(MapToResponse(updated));
+        var count = await obligationRepository.CountByContractAsync(updated.Id, cancellationToken);
+        return Results.Ok(MapToResponse(updated, count));
     }
 
     private static async Task<IResult> ActivateAsync(
         Guid id,
         ActivateContractRequestWire? request,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         CancellationToken cancellationToken)
     {
@@ -179,13 +199,15 @@ public static class ContractEndpoints
             return Results.NotFound();
         }
 
-        return Results.Ok(MapToResponse(updated));
+        var count = await obligationRepository.CountByContractAsync(updated.Id, cancellationToken);
+        return Results.Ok(MapToResponse(updated, count));
     }
 
     private static async Task<IResult> TerminateAsync(
         Guid id,
         TerminateContractRequestWire? request,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         ILogger<Program> logger,
         CancellationToken cancellationToken)
@@ -215,12 +237,14 @@ public static class ContractEndpoints
             id,
             request.Reason);
 
-        return Results.Ok(MapToResponse(updated));
+        var count = await obligationRepository.CountByContractAsync(updated.Id, cancellationToken);
+        return Results.Ok(MapToResponse(updated, count));
     }
 
     private static async Task<IResult> ArchiveAsync(
         Guid id,
         ContractService service,
+        IObligationRepository obligationRepository,
         ITenantContext tenantContext,
         CancellationToken cancellationToken)
     {
@@ -232,7 +256,8 @@ public static class ContractEndpoints
             return Results.NotFound();
         }
 
-        return Results.Ok(MapToResponse(updated));
+        var count = await obligationRepository.CountByContractAsync(updated.Id, cancellationToken);
+        return Results.Ok(MapToResponse(updated, count));
     }
 
     private static void RequireResolvedTenant(ITenantContext tenantContext)
@@ -278,7 +303,11 @@ public static class ContractEndpoints
         Metadata = request.Metadata,
     };
 
-    private static ContractResponse MapToResponse(Contract c) => new()
+    // Batch 026 finding I: <paramref name="obligationsCount"/> is the real count fetched by the
+    // caller (single-contract endpoints call CountByContractAsync; ListAsync batch-fetches via
+    // CountByContractIdsAsync). latest_version still mirrors current_version — versions land
+    // through ContractVersionService elsewhere.
+    private static ContractResponse MapToResponse(Contract c, int obligationsCount) => new()
     {
         Id = c.Id,
         TenantId = c.TenantId,
@@ -298,9 +327,7 @@ public static class ContractEndpoints
         Metadata = c.Metadata,
         RagDocumentId = c.RagDocumentId,
         CurrentVersion = c.CurrentVersion,
-        // obligations_count stub — real count wires up in Batch 010. latest_version tracks
-        // current_version until ContractVersions ship in Batch 009.
-        ObligationsCount = 0,
+        ObligationsCount = obligationsCount,
         LatestVersion = c.CurrentVersion,
         CreatedAt = c.CreatedAt,
         UpdatedAt = c.UpdatedAt,

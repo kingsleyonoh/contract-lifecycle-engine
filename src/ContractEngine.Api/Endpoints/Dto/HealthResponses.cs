@@ -22,6 +22,17 @@ public sealed class HealthDbResponse
     public string? Error { get; set; }
 }
 
+/// <summary>
+/// Wire shape for <c>GET /health/basic</c> — neutral readiness probe for public load balancers.
+/// Deliberately carries no topology: just <c>status: "ready" | "not_ready"</c>. Batch 026
+/// security-audit finding H — operator-detailed readiness lives on <c>/health/ready</c>.
+/// </summary>
+public sealed class HealthBasicResponse
+{
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "ready";
+}
+
 /// <summary>Wire shape for <c>GET /health/ready</c> — aggregate readiness probe.</summary>
 public sealed class HealthReadyResponse
 {
