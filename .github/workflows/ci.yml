@@ -1,0 +1,94 @@
+name: ci
+
+# Runs on every push to dev/main and every PR targeting dev/main. Builds the solution, runs the
+# full non-E2E test suite against a workflow-hosted PostgreSQL 16 service container. E2E tests
+# are skipped in CI because they spawn Kestrel subprocesses bound to fixed ports 5050-5061,
+# which collide with the GitHub-hosted runner's networking on parallel workflow runs.
+# Promotion gate for main: PR must be green on ci before merge; deploy.yml re-runs tests again
+# after merge as a second safety net.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    # Workflow-hosted Postgres 16 matches the production image. The Contract Engine's
+    # DatabaseFixture + test factories point DATABASE_URL at this service at runtime via the
+    # env block below.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: contract_engine
+          POSTGRES_PASSWORD: localdev
+          POSTGRES_DB: contract_engine_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contract_engine"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: Host=localhost;Port=5432;Database=contract_engine_test;Username=contract_engine;Password=localdev
+      ASPNETCORE_ENVIRONMENT: Testing
+      AUTO_MIGRATE: "false"
+      AUTO_SEED: "false"
+      JOBS_ENABLED: "false"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Cache restored NuGet packages keyed on every csproj + lock file. Invalidates on any
+      # dependency bump so we never ship a stale graph to production tests.
+      - name: cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: restore
+        run: dotnet restore ContractEngine.sln
+
+      - name: build
+        run: dotnet build ContractEngine.sln --no-restore -c Release
+
+      # Run every non-E2E test assembly with TRX + coverage output. The E2E project is intentionally
+      # excluded — it spins up Kestrel subprocesses that bind fixed ports 5050-5061, which can
+      # clash with runner networking on parallel jobs.
+      - name: test (non-E2E)
+        run: |
+          dotnet test tests/ContractEngine.Core.Tests/ContractEngine.Core.Tests.csproj --no-build -c Release --logger "trx;LogFileName=core.trx" --collect:"XPlat Code Coverage"
+          dotnet test tests/ContractEngine.Api.Tests/ContractEngine.Api.Tests.csproj --no-build -c Release --logger "trx;LogFileName=api.trx" --collect:"XPlat Code Coverage"
+          dotnet test tests/ContractEngine.Integration.Tests/ContractEngine.Integration.Tests.csproj --no-build -c Release --logger "trx;LogFileName=integration.trx" --collect:"XPlat Code Coverage"
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            **/TestResults/*.trx
+            **/TestResults/**/coverage.cobertura.xml
+          retention-days: 14

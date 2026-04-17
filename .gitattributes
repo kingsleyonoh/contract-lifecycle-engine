@@ -1,0 +1,11 @@
+# Enforce LF line endings for shell scripts — they run on the Linux VPS deploy host
+# and CRLF would cause "bad interpreter" errors on the shebang line.
+*.sh text eol=lf
+
+# YAML workflow files are also consumed by Linux-based GitHub Actions runners.
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Dockerfile scripts run inside Linux containers.
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
