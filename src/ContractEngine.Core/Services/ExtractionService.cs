@@ -18,9 +18,11 @@ namespace ContractEngine.Core.Services;
 ///
 /// <para>Extract-then-confirm: all AI-extracted obligations are created with
 /// <see cref="ObligationStatus.Pending"/> — no auto-activation. Humans confirm via the
-/// <c>/api/obligations/{id}/confirm</c> endpoint.</para>
+/// <c>/api/obligations/{id}/confirm</c> endpoint. Obligation shape mapping lives in
+/// <see cref="ExtractionResultParser"/>; per-job pipeline helpers live in
+/// <c>ExtractionService.Pipeline.cs</c> for modularity.</para>
 /// </summary>
-public class ExtractionService
+public partial class ExtractionService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -119,48 +121,12 @@ public class ExtractionService
         job.StartedAt = DateTime.UtcNow;
         await _jobRepo.UpdateAsync(job, cancellationToken);
 
-        // Resolve the document — use the job's explicit document or find the latest for the
-        // contract.
-        ContractDocument? document = null;
-        if (job.DocumentId.HasValue)
+        var (uploadOk, ragDocId) = await UploadDocumentIfNeededAsync(job, cancellationToken);
+        if (!uploadOk)
         {
-            document = await _docRepo.GetByIdAsync(job.DocumentId.Value, cancellationToken);
+            return; // job already marked Failed + persisted by the helper.
         }
 
-        // Upload to RAG if the document hasn't been uploaded yet.
-        string? ragDocId = document?.RagDocumentId ?? job.RagDocumentId;
-        if (document is not null && string.IsNullOrEmpty(ragDocId))
-        {
-            try
-            {
-                using var stream = await _storage.OpenReadAsync(
-                    document.FilePath, cancellationToken);
-                var ragDoc = await _ragClient.UploadDocumentAsync(
-                    stream,
-                    document.FileName,
-                    document.MimeType ?? "application/octet-stream",
-                    cancellationToken);
-
-                ragDocId = ragDoc.Id;
-                document.RagDocumentId = ragDocId;
-                await _docRepo.UpdateAsync(document, cancellationToken);
-                job.RagDocumentId = ragDocId;
-            }
-            catch (Exception ex)
-            {
-                job.Status = ExtractionStatus.Failed;
-                job.ErrorMessage = $"RAG Platform upload failed: {ex.Message}";
-                job.CompletedAt = DateTime.UtcNow;
-                await _jobRepo.UpdateAsync(job, cancellationToken);
-                return;
-            }
-        }
-        else if (!string.IsNullOrEmpty(ragDocId))
-        {
-            job.RagDocumentId = ragDocId;
-        }
-
-        // Run each prompt type.
         var rawResponses = job.RawResponses ?? new Dictionary<string, object>();
         var totalObligations = 0;
         var successCount = 0;
@@ -168,49 +134,21 @@ public class ExtractionService
 
         foreach (var promptType in job.PromptTypes)
         {
-            // Skip already-processed prompt types (for retry scenarios).
-            if (rawResponses.ContainsKey(promptType))
+            if (AlreadyProcessedSuccessfully(rawResponses, promptType))
             {
-                var existing = rawResponses[promptType];
-                if (existing is not JsonElement je || !IsErrorMarker(je))
-                {
-                    successCount++;
-                    continue;
-                }
+                successCount++;
+                continue;
             }
 
-            try
+            var outcome = await RunPromptTypeAsync(
+                job, promptType, ragDocId, rawResponses, cancellationToken);
+            totalObligations += outcome.ObligationsAdded;
+            if (outcome.Succeeded)
             {
-                var promptText = await ResolvePromptTextAsync(
-                    job.TenantId, promptType, cancellationToken);
-
-                var filters = !string.IsNullOrEmpty(ragDocId)
-                    ? new Dictionary<string, object> { ["document_id"] = ragDocId }
-                    : null;
-
-                var chatResult = await _ragClient.ChatSyncAsync(
-                    promptText,
-                    filters,
-                    "json",
-                    cancellationToken);
-
-                var obligations = ParseObligations(
-                    chatResult.Answer, promptType, job, cancellationToken);
-
-                foreach (var obl in obligations)
-                {
-                    await _obligationRepo.AddAsync(obl, cancellationToken);
-                    totalObligations++;
-                }
-
-                rawResponses[promptType] = JsonSerializer.SerializeToElement(
-                    chatResult.Answer, JsonOptions);
                 successCount++;
             }
-            catch (Exception ex)
+            else
             {
-                rawResponses[promptType] = JsonSerializer.SerializeToElement(
-                    new { error = ex.Message }, JsonOptions);
                 failedTypes.Add(promptType);
             }
         }
@@ -218,21 +156,7 @@ public class ExtractionService
         job.RawResponses = rawResponses;
         job.ObligationsFound = totalObligations;
         job.CompletedAt = DateTime.UtcNow;
-
-        if (failedTypes.Count == 0)
-        {
-            job.Status = ExtractionStatus.Completed;
-        }
-        else if (successCount > 0)
-        {
-            job.Status = ExtractionStatus.Partial;
-            job.ErrorMessage = $"Failed prompt types: {string.Join(", ", failedTypes)}";
-        }
-        else
-        {
-            job.Status = ExtractionStatus.Failed;
-            job.ErrorMessage = $"All prompt types failed: {string.Join(", ", failedTypes)}";
-        }
+        ClassifyJobOutcome(job, failedTypes, successCount);
 
         await _jobRepo.UpdateAsync(job, cancellationToken);
     }
@@ -267,117 +191,6 @@ public class ExtractionService
         return job;
     }
 
-    private async Task<string> ResolvePromptTextAsync(
-        Guid tenantId,
-        string promptType,
-        CancellationToken cancellationToken)
-    {
-        var prompt = await _promptRepo.GetPromptAsync(tenantId, promptType, cancellationToken);
-        if (prompt is not null)
-        {
-            return prompt.PromptText;
-        }
-
-        return ExtractionDefaults.GetByType(promptType)
-            ?? $"Extract all {promptType} obligations from this contract document.";
-    }
-
-    private List<Obligation> ParseObligations(
-        string rawAnswer,
-        string promptType,
-        ExtractionJob job,
-        CancellationToken cancellationToken)
-    {
-        var obligations = new List<Obligation>();
-
-        try
-        {
-            using var doc = JsonDocument.Parse(rawAnswer);
-            if (!doc.RootElement.TryGetProperty("obligations", out var array)
-                || array.ValueKind != JsonValueKind.Array)
-            {
-                return obligations;
-            }
-
-            foreach (var item in array.EnumerateArray())
-            {
-                var title = item.TryGetProperty("title", out var t)
-                    ? t.GetString() ?? $"Extracted {promptType} obligation"
-                    : $"Extracted {promptType} obligation";
-
-                var oblType = ResolveObligationType(
-                    item.TryGetProperty("obligation_type", out var ot)
-                        ? ot.GetString()
-                        : promptType);
-
-                var confidence = item.TryGetProperty("confidence", out var c)
-                    ? (decimal?)c.GetDouble()
-                    : null;
-
-                var amount = item.TryGetProperty("amount", out var a)
-                    ? (decimal?)a.GetDouble()
-                    : null;
-
-                var currency = item.TryGetProperty("currency", out var cur)
-                    ? cur.GetString() ?? "USD"
-                    : "USD";
-
-                var now = DateTime.UtcNow;
-                obligations.Add(new Obligation
-                {
-                    Id = Guid.NewGuid(),
-                    TenantId = job.TenantId,
-                    ContractId = job.ContractId,
-                    ObligationType = oblType,
-                    Status = ObligationStatus.Pending,
-                    Source = ObligationSource.RagExtraction,
-                    ExtractionJobId = job.Id,
-                    Title = title,
-                    Description = item.TryGetProperty("description", out var d)
-                        ? d.GetString()
-                        : null,
-                    ConfidenceScore = confidence,
-                    Amount = amount,
-                    Currency = currency,
-                    ClauseReference = item.TryGetProperty("clause_reference", out var cr)
-                        ? cr.GetString()
-                        : null,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                });
-            }
-        }
-        catch (JsonException)
-        {
-            // Malformed JSON — return empty; the prompt type is still counted as successful
-            // if the chat call itself succeeded (the response just had no parseable obligations).
-        }
-
-        return obligations;
-    }
-
-    private static ObligationType ResolveObligationType(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return ObligationType.Other;
-        }
-
-        var normalized = raw.Replace("_", string.Empty);
-        if (Enum.TryParse<ObligationType>(normalized, ignoreCase: true, out var parsed))
-        {
-            return parsed;
-        }
-
-        return ObligationType.Other;
-    }
-
-    private static bool IsErrorMarker(JsonElement element)
-    {
-        return element.ValueKind == JsonValueKind.Object
-            && element.TryGetProperty("error", out _);
-    }
-
     private Guid RequireTenantId()
     {
         if (!_tenantContext.IsResolved || _tenantContext.TenantId is null)
@@ -386,4 +199,6 @@ public class ExtractionService
         }
         return _tenantContext.TenantId.Value;
     }
+
+    private readonly record struct PromptOutcome(bool Succeeded, int ObligationsAdded);
 }
