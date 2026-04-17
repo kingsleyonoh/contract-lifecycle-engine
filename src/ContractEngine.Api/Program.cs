@@ -165,6 +165,7 @@ app.MapContractTagEndpoints();
 app.MapContractVersionEndpoints();
 app.MapObligationEndpoints();
 app.MapAlertEndpoints();
+app.MapExtractionEndpoints();
 app.MapAnalyticsEndpoints();
 
 app.Run();

@@ -15,6 +15,9 @@ public interface IContractDocumentRepository
     /// <summary>Returns <c>null</c> for missing or cross-tenant ids (hidden by the query filter).</summary>
     Task<ContractDocument?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
+    /// <summary>Updates an existing document row (e.g. to set <c>rag_document_id</c> after RAG upload).</summary>
+    Task UpdateAsync(ContractDocument document, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Lists all documents for the given <paramref name="contractId"/> for the current tenant,
     /// paginated via the shared <c>(CreatedAt, Id)</c> cursor helper.

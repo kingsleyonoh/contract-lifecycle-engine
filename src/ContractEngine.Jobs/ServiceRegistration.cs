@@ -61,6 +61,16 @@ public static class ServiceRegistration
                 .WithIdentity($"{nameof(DeadlineScannerJob)}-trigger")
                 // Hourly at the top of the hour (PRD §7). Quartz uses a 7-field cron (with seconds).
                 .WithCronSchedule("0 0 * * * ?"));
+
+            var extractorKey = new JobKey(nameof(ExtractionProcessorJob));
+            q.AddJob<ExtractionProcessorJob>(j => j
+                .WithIdentity(extractorKey)
+                .DisallowConcurrentExecution());
+            q.AddTrigger(t => t
+                .ForJob(extractorKey)
+                .WithIdentity($"{nameof(ExtractionProcessorJob)}-trigger")
+                // Every 5 minutes (PRD §7). Quartz 7-field cron with seconds.
+                .WithCronSchedule("0 */5 * * * ?"));
         });
 
         services.AddQuartzHostedService(opt =>

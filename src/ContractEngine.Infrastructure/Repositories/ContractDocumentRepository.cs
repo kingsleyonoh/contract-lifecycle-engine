@@ -33,6 +33,12 @@ public sealed class ContractDocumentRepository : IContractDocumentRepository
         return _db.ContractDocuments.FirstOrDefaultAsync(d => d.Id == id, cancellationToken);
     }
 
+    public async Task UpdateAsync(ContractDocument document, CancellationToken cancellationToken = default)
+    {
+        _db.ContractDocuments.Update(document);
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
     public Task<PagedResult<ContractDocument>> ListByContractAsync(
         Guid contractId,
         PageRequest request,
