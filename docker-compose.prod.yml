@@ -10,7 +10,9 @@ services:
       - DOCUMENT_STORAGE_PATH=/app/data/documents
       - AUTO_SEED=${AUTO_SEED:-true}
       - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
-      - SELF_REGISTRATION_ENABLED=${SELF_REGISTRATION_ENABLED:-true}
+      # Safe-by-default: operators must opt in to open tenant registration. Flip to `true` for
+      # demo / self-serve SaaS hosts; keep `false` for single-tenant or seeded-tenant deployments.
+      - SELF_REGISTRATION_ENABLED=${SELF_REGISTRATION_ENABLED:-false}
       - RAG_PLATFORM_URL=${RAG_PLATFORM_URL}
       - RAG_PLATFORM_API_KEY=${RAG_PLATFORM_API_KEY}
       - RAG_PLATFORM_ENABLED=${RAG_PLATFORM_ENABLED:-true}

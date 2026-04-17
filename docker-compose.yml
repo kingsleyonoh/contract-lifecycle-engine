@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: contract_engine
-      POSTGRES_PASSWORD: localdev
-      POSTGRES_DB: contract_engine
+      POSTGRES_USER: ${POSTGRES_USER:-contract_engine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev}
+      POSTGRES_DB: ${POSTGRES_DB:-contract_engine}
     ports:
       - "5432:5432"
     volumes:
