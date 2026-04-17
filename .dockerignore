@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Build output
+**/bin/
+**/obj/
+**/publish/
+**/out/
+
+# Tests (the runtime image only needs the Api publish output)
+tests/
+
+# Test results
+**/TestResults/
+**/coverage/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# AI workflow system
+.agent/
+.claude/
+.yolo/
+CLAUDE.md
+AGENTS.md
+.cursorrules
+
+# Docker
+docker-compose*.yml
+Dockerfile
+
+# Data
+data/
+
+# OS
+.DS_Store
+Thumbs.db

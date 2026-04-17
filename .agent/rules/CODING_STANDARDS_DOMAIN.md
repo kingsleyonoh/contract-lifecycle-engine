@@ -6,7 +6,7 @@
 
 ### Dev Branch Workflow
 1. All implementation work happens on `dev` branch
-2. Tests run against local services ({{LOCAL_SERVICES}})
+2. Tests run against local services (local PostgreSQL)
 3. Each completed item → commit → push to `dev`
 4. Run full test suite frequently
 
@@ -56,7 +56,7 @@
 
 Before merging ANY feature to `main`:
 
-1. **All tests pass** — `python -m pytest` / `npm test` / equivalent shows 0 failures
+1. **All tests pass** — `dotnet test` shows 0 failures
 2. **No console.log / print debugging** — remove all debug output
 3. **No TODO/FIXME/HACK** — resolve them or create tickets
 4. **Error handling exists** — no unhandled exceptions in user flows
@@ -74,11 +74,12 @@ Before merging ANY feature to `main`:
 4. Blank line between each group
 
 ### Naming Conventions
-- **Files:** `snake_case.py` / `kebab-case.ts` (follow project convention)
-- **Classes:** `PascalCase`
-- **Functions/Methods:** `snake_case` (Python) / `camelCase` (JS/TS)
-- **Constants:** `UPPER_SNAKE_CASE`
-- **Private:** Prefix with `_` (Python)
+- **Files:** `PascalCase.cs` matching the primary class/interface name
+- **Classes/Interfaces/Enums:** `PascalCase` — interfaces prefixed with `I` (`IContractRepository`)
+- **Methods/Properties:** `PascalCase` (C# convention)
+- **Local variables/parameters:** `camelCase`
+- **Constants:** `PascalCase` or `UPPER_SNAKE_CASE` (follow existing pattern)
+- **Private fields:** `_camelCase` prefix with underscore
 
 ### Project Structure
 - Follow the structure defined in `CODEBASE_CONTEXT.md`

@@ -35,7 +35,13 @@ appsettings.Development.json
 docker-compose.override.yml
 
 # ─── Document Storage ───
-data/
+# Anchor to repo root (leading /) so it matches only the top-level data/ directory used by
+# DOCUMENT_STORAGE_PATH — not accidentally the Data/ folders inside src/ or tests/ which hold
+# EF Core DbContext code and fixtures. (Git on Windows/macOS is case-insensitive by default.)
+/data/
+# Also ignore the local dev document store that appears when running `dotnet run` from inside
+# src/ContractEngine.Api/ (DOCUMENT_STORAGE_PATH resolves relative to cwd).
+src/ContractEngine.Api/data/
 
 # ─── Test Results ───
 TestResults/

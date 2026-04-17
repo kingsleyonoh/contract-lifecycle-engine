@@ -1,0 +1,71 @@
+services:
+  app:
+    image: ghcr.io/kingsleyonoh/contract-lifecycle-engine:latest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - DATABASE_URL=${DATABASE_URL}
+      - DOCUMENT_STORAGE_PATH=/app/data/documents
+      - AUTO_SEED=${AUTO_SEED:-true}
+      - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
+      # Safe-by-default: operators must opt in to open tenant registration. Flip to `true` for
+      # demo / self-serve SaaS hosts; keep `false` for single-tenant or seeded-tenant deployments.
+      - SELF_REGISTRATION_ENABLED=${SELF_REGISTRATION_ENABLED:-false}
+      - RAG_PLATFORM_URL=${RAG_PLATFORM_URL}
+      - RAG_PLATFORM_API_KEY=${RAG_PLATFORM_API_KEY}
+      - RAG_PLATFORM_ENABLED=${RAG_PLATFORM_ENABLED:-true}
+      - NOTIFICATION_HUB_URL=${NOTIFICATION_HUB_URL}
+      - NOTIFICATION_HUB_API_KEY=${NOTIFICATION_HUB_API_KEY}
+      - NOTIFICATION_HUB_ENABLED=${NOTIFICATION_HUB_ENABLED:-false}
+      - WEBHOOK_SIGNING_SECRET=${WEBHOOK_SIGNING_SECRET}
+      - WEBHOOK_ENGINE_ENABLED=${WEBHOOK_ENGINE_ENABLED:-false}
+      - WORKFLOW_ENGINE_URL=${WORKFLOW_ENGINE_URL}
+      - WORKFLOW_ENGINE_API_KEY=${WORKFLOW_ENGINE_API_KEY}
+      - WORKFLOW_ENGINE_ENABLED=${WORKFLOW_ENGINE_ENABLED:-false}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - COMPLIANCE_LEDGER_ENABLED=${COMPLIANCE_LEDGER_ENABLED:-false}
+      - INVOICE_RECON_URL=${INVOICE_RECON_URL}
+      - INVOICE_RECON_API_KEY=${INVOICE_RECON_API_KEY}
+      - INVOICE_RECON_ENABLED=${INVOICE_RECON_ENABLED:-false}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - LOG_LEVEL=${LOG_LEVEL:-Information}
+    volumes:
+      # Persist uploaded contract documents across container restarts/rebuilds.
+      - documents:/app/data/documents
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      - "caddy=contracts.kingsleyonoh.com"
+      - "caddy.reverse_proxy={{upstreams 5000}}"
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-contract_engine}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command: ["--jetstream", "--store_dir", "/data"]
+    volumes:
+      - natsdata:/data
+    profiles:
+      - nats
+
+volumes:
+  pgdata:
+  natsdata:
+  documents:

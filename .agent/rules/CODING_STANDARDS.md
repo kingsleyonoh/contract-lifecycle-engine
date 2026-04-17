@@ -169,16 +169,27 @@ chore(workflows): add sprint velocity to resume workflow
 - **Max 200 lines** per class.
 
 ## PowerShell Environment
-- **ALWAYS activate the virtual environment before ANY `python` or `pip` command:**
-  ```powershell
-  .\venv\Scripts\Activate.ps1
-  ```
-- **NEVER run `pip install` without the venv active.** This installs to system Python and breaks other projects.
-- Verify venv is active: prompt shows `(venv)` prefix. If not, activate first.
 - Use `;` to chain commands, **NEVER** `&&`
-- **NEVER use inline `python -c "..."`** for complex code. Write a `.py` file instead.
 - Special characters that break PowerShell: `|`, `>`, `<`, `$`, `()`, `{}`
-- Write Python scripts to files instead of inline commands.
+- Use `dotnet` CLI for all build/test/run operations
+
+## .NET / C# Conventions
+- **Framework:** ASP.NET Core 8 with Minimal APIs — endpoints in `Endpoints/` classes, not controllers
+- **ORM:** Entity Framework Core 8 with Npgsql — code-first migrations via `dotnet ef`
+- **DI:** Built-in `Microsoft.Extensions.DependencyInjection` — register in `ServiceRegistration.cs`
+- **Dependency Hierarchy (ENFORCED):**
+  ```
+  ContractEngine.Api → Core, Infrastructure, Jobs
+  ContractEngine.Jobs → Core, Infrastructure
+  ContractEngine.Infrastructure → Core
+  ContractEngine.Core → nothing (pure domain, zero external dependencies)
+  ```
+  **NEVER import upward.** Core has no outward dependencies. Infrastructure implements Core interfaces.
+- **Naming:** PascalCase for classes/methods/properties, camelCase for local variables, UPPER_SNAKE_CASE for constants
+- **Files:** PascalCase filenames matching class names (`ContractService.cs`, `ObligationStateMachine.cs`)
+- **Async/Await:** All I/O operations must be async. Suffix async methods with `Async`.
+- **Validation:** FluentValidation 11.x — request DTOs validated via pipeline behavior
+- **Logging:** Serilog structured JSON — use `ILogger<T>` injection, never `Console.WriteLine`
 
 ## Git Branching Strategy
 
