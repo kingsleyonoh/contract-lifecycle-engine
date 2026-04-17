@@ -6,6 +6,7 @@ using ContractEngine.Integration.Tests.Fixtures;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Xunit;
 
 namespace ContractEngine.Integration.Tests.Data;
@@ -29,6 +30,7 @@ public class ObligationEntityTests
     public async Task Obligation_RoundTrip_PreservesAllFields()
     {
         var (tenantId, contractId) = await SeedContractAsync();
+        var extractionJobId = await SeedExtractionJobAsync(tenantId, contractId);
 
         using var scope = ScopeFor(tenantId);
         var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
@@ -54,7 +56,7 @@ public class ObligationEntityTests
             GracePeriodDays = 7,
             BusinessDayCalendar = "DE",
             Source = ObligationSource.RagExtraction,
-            ExtractionJobId = Guid.NewGuid(),
+            ExtractionJobId = extractionJobId,
             ConfidenceScore = 0.92m,
             ClauseReference = "§12.3",
             Metadata = new Dictionary<string, object>
@@ -85,7 +87,7 @@ public class ObligationEntityTests
         reloaded.GracePeriodDays.Should().Be(7);
         reloaded.BusinessDayCalendar.Should().Be("DE");
         reloaded.Source.Should().Be(ObligationSource.RagExtraction);
-        reloaded.ExtractionJobId.Should().Be(obligation.ExtractionJobId);
+        reloaded.ExtractionJobId.Should().Be(extractionJobId);
         reloaded.ConfidenceScore.Should().Be(0.92m);
         reloaded.ClauseReference.Should().Be("§12.3");
         reloaded.Metadata.Should().NotBeNull();
@@ -303,6 +305,23 @@ public class ObligationEntityTests
     private IServiceScope ScopeFor(Guid tenantId) =>
         _fixture.CreateScope(services =>
             services.AddScoped<ITenantContext>(_ => new FixedTenantContext(tenantId)));
+
+    private async Task<Guid> SeedExtractionJobAsync(Guid tenantId, Guid contractId)
+    {
+        using var scope = ScopeFor(tenantId);
+        var db = scope.ServiceProvider.GetRequiredService<ContractDbContext>();
+        var job = new ExtractionJob
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            ContractId = contractId,
+            Status = ExtractionStatus.Completed,
+            PromptTypes = new[] { "payment" },
+        };
+        db.Set<ExtractionJob>().Add(job);
+        await db.SaveChangesAsync();
+        return job.Id;
+    }
 
     private async Task<(Guid TenantId, Guid ContractId)> SeedContractAsync()
     {

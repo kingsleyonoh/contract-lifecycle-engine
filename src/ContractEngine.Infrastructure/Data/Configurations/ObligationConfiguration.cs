@@ -109,12 +109,17 @@ internal sealed class ObligationConfiguration : IEntityTypeConfiguration<Obligat
                 v => EnumStringConversions.ParseEnum<ObligationSource>(v))
             .HasDefaultValue(ObligationSource.Manual);
 
-        // ExtractionJobId: column only — no FK relationship declared because extraction_jobs
-        // doesn't exist yet (Phase 2). A later migration will add the FK via AddForeignKey once
-        // that table lands. Today the column is a nullable uuid with no referential integrity.
+        // ExtractionJobId: FK to extraction_jobs(id) ON DELETE SET NULL. The extraction_jobs table
+        // landed in Batch 020; the FK was added by the same migration. The column remains nullable
+        // (null for manual obligations, populated for RAG-extracted ones).
         entity.Property(o => o.ExtractionJobId)
             .HasColumnName("extraction_job_id")
             .HasColumnType("uuid");
+
+        entity.HasOne<ExtractionJob>()
+            .WithMany()
+            .HasForeignKey(o => o.ExtractionJobId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         entity.Property(o => o.ConfidenceScore)
             .HasColumnName("confidence_score")

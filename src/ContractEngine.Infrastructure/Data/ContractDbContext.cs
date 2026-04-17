@@ -47,6 +47,10 @@ public class ContractDbContext : DbContext
 
     public DbSet<DeadlineAlert> DeadlineAlerts => Set<DeadlineAlert>();
 
+    public DbSet<ExtractionPrompt> ExtractionPrompts => Set<ExtractionPrompt>();
+
+    public DbSet<ExtractionJob> ExtractionJobs => Set<ExtractionJob>();
+
     /// <summary>
     /// Registers a tenant-scoped global query filter on the supplied entity type. Call from
     /// <see cref="OnModelCreating"/> for every entity that implements <see cref="ITenantScoped"/>.
@@ -76,5 +80,7 @@ public class ContractDbContext : DbContext
         ApplyTenantQueryFilter<Obligation>(modelBuilder);
         ApplyTenantQueryFilter<ObligationEvent>(modelBuilder);
         ApplyTenantQueryFilter<DeadlineAlert>(modelBuilder);
+        // ExtractionPrompt intentionally unfiltered (nullable tenant_id, like HolidayCalendar).
+        ApplyTenantQueryFilter<ExtractionJob>(modelBuilder);
     }
 }

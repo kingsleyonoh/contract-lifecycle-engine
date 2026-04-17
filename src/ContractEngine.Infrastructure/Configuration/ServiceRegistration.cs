@@ -101,6 +101,11 @@ public static class ServiceRegistration
         // placed under ContractEngine.Core.Validation are picked up automatically.
         services.AddValidatorsFromAssemblyContaining<RegisterTenantRequestValidator>();
 
+        // Extraction pipeline data layer (Batch 020) — prompts + jobs. No service orchestration
+        // this batch; the ExtractionService that consumes these repositories lands in a later batch.
+        services.AddScoped<IExtractionPromptRepository, ExtractionPromptRepository>();
+        services.AddScoped<IExtractionJobRepository, ExtractionJobRepository>();
+
         // RAG Platform integration (Batch 019) — feature-flagged per PRD §5.6a.
         // ENABLED=true  → typed HttpClient with retry + circuit breaker resilience pipeline.
         // ENABLED=false → NoOp stub; reads return empty, writes throw (see NoOpRagPlatformClient).
