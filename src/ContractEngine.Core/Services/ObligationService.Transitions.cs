@@ -14,17 +14,33 @@ public sealed partial class ObligationService
     /// Pending -> Active. The only legal transition from Pending other than Dismissed. Writes the
     /// obligation update then the event row in one DbContext scope; EF tracks them as separate
     /// entity sets so a single SaveChanges commits both atomically.
+    ///
+    /// <para>Phase 3 side-effect: when the obligation's type is <see cref="ObligationType.Payment"/>,
+    /// a purchase-order is emitted to the Invoice Recon engine AFTER the DB commit. Failures are
+    /// caught + logged — confirmation itself must never roll back over a missed PO.</para>
     /// </summary>
-    public Task<Obligation?> ConfirmAsync(
+    public async Task<Obligation?> ConfirmAsync(
         Guid id,
         string actor,
-        CancellationToken cancellationToken = default) =>
-        TransitionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var updated = await TransitionAsync(
             id,
             ObligationStatus.Active,
             actor,
             reason: "confirm: pending \u2192 active",
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+        if (updated is not null)
+        {
+            // Best-effort dispatch — never rolls back. EmitInvoiceReconAsync itself swallows
+            // + logs any exception from the recon client.
+            await EmitInvoiceReconAsync(updated, updated.TenantId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return updated;
+    }
 
     /// <summary>
     /// Pending -> Dismissed. Terminal transition; the obligation never re-enters the flow. Reason
@@ -284,6 +300,12 @@ public sealed partial class ObligationService
             CreatedAt = DateTime.UtcNow,
         };
         await _eventRepository.AddAsync(evt, cancellationToken);
+
+        // Phase 3 — fire-and-forget ecosystem dispatch AFTER the event row commits. Failures
+        // are swallowed + logged inside the helper so a missed notification or ledger entry
+        // never rolls back the transition that produced them.
+        await EmitTransitionSideEffectsAsync(existing, fromStatus, targetStatus, tenantId, cancellationToken)
+            .ConfigureAwait(false);
 
         return existing;
     }

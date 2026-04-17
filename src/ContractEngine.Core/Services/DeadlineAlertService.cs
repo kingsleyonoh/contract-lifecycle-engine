@@ -3,6 +3,8 @@ using ContractEngine.Core.Enums;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContractEngine.Core.Services;
 
@@ -31,13 +33,21 @@ public sealed class DeadlineAlertService
 {
     private readonly IDeadlineAlertRepository _repository;
     private readonly ITenantContext _tenantContext;
+    private readonly INotificationPublisher _notificationPublisher;
+    private readonly ILogger<DeadlineAlertService> _logger;
 
     public DeadlineAlertService(
         IDeadlineAlertRepository repository,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        INotificationPublisher? notificationPublisher = null,
+        ILogger<DeadlineAlertService>? logger = null)
     {
         _repository = repository;
         _tenantContext = tenantContext;
+        // Optional to keep legacy test ctors (pre-Batch 023) compiling. Production DI always
+        // resolves a non-null publisher (real or no-op stub) and a real logger.
+        _notificationPublisher = notificationPublisher ?? new NullNotificationPublisher();
+        _logger = logger ?? NullLogger<DeadlineAlertService>.Instance;
     }
 
     /// <summary>
@@ -82,7 +92,74 @@ public sealed class DeadlineAlertService
             CreatedAt = DateTime.UtcNow,
         };
         await _repository.AddAsync(alert, cancellationToken);
+
+        // Phase 3 — emit the Notification Hub event AFTER the alert has been persisted. Failures
+        // from the publisher MUST NOT roll back the alert row; we catch and log. When the Hub
+        // acknowledges dispatch we stamp <c>notification_sent=true</c> so the UI can distinguish
+        // alerts already pushed to email/Telegram from those pending dispatch.
+        try
+        {
+            var eventType = AlertTypeToEventType(alertType);
+            var payload = new
+            {
+                tenant_id = tenantId,
+                alert_id = alert.Id,
+                obligation_id = obligationId,
+                contract_id = contractId,
+                alert_type = eventType,
+                days_remaining = daysRemaining,
+                message = alert.Message,
+                created_at = alert.CreatedAt,
+            };
+
+            var result = await _notificationPublisher
+                .PublishEventAsync(eventType, payload, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.Dispatched)
+            {
+                alert.NotificationSent = true;
+                await _repository.UpdateAsync(alert, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Notification Hub dispatch for alert {AlertId} ({AlertType}) failed — continuing",
+                alert.Id,
+                alertType);
+        }
+
         return alert;
+    }
+
+    /// <summary>
+    /// Maps internal <see cref="AlertType"/> enum values to canonical Notification Hub event types.
+    /// The Hub's template engine keys on <c>event_type</c>; any mismatch means no template matches
+    /// and the event is silently dropped — keep this table in sync with the onboarding script.
+    /// </summary>
+    private static string AlertTypeToEventType(AlertType alertType) => alertType switch
+    {
+        AlertType.DeadlineApproaching => "obligation.deadline.approaching",
+        AlertType.ObligationOverdue => "obligation.overdue",
+        AlertType.ContractExpiring => "contract.expiring",
+        AlertType.AutoRenewalWarning => "contract.auto_renewed",
+        AlertType.ContractConflict => "contract.conflict_detected",
+        _ => "alert.generic",
+    };
+
+    /// <summary>
+    /// Fallback <see cref="INotificationPublisher"/> used only when a legacy test ctor omits the
+    /// publisher. Behaves identically to <c>NoOpNotificationPublisher</c> (returns not-dispatched,
+    /// never throws) so the domain path stays intact.
+    /// </summary>
+    private sealed class NullNotificationPublisher : INotificationPublisher
+    {
+        public Task<Integrations.Notifications.NotificationDispatchResult> PublishEventAsync(
+            string eventType,
+            object payload,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new Integrations.Notifications.NotificationDispatchResult(Dispatched: false));
     }
 
     /// <summary>

@@ -117,6 +117,14 @@ public static class ServiceRegistration
         // ENABLED=false → NoOp stub; reads return empty, writes throw (see NoOpRagPlatformClient).
         AddRagPlatformClient(services, configuration);
 
+        // Phase 3 ecosystem integrations (Batch 023) — all four share the RAG pattern:
+        // feature-flagged, typed HttpClient + resilience when enabled, no-op stub when not.
+        // Compliance Ledger swaps HTTP for NATS JetStream but follows the same flag contract.
+        AddNotificationHub(services, configuration);
+        AddWorkflowEngine(services, configuration);
+        AddInvoiceRecon(services, configuration);
+        AddComplianceLedger(services, configuration);
+
         return services;
     }
 
@@ -165,6 +173,137 @@ public static class ServiceRegistration
                     SamplingDuration = TimeSpan.FromSeconds(30),
                 });
             });
+    }
+
+    /// <summary>
+    /// Wires the Notification Hub client (PRD §5.6b). Same shape as the RAG client: feature-flagged,
+    /// typed HttpClient + resilience when enabled, no-op stub when not. The stub does NOT throw —
+    /// notifications are fire-and-forget, see <c>NoOpNotificationPublisher</c> for the rationale.
+    /// </summary>
+    private static void AddNotificationHub(IServiceCollection services, IConfiguration configuration)
+    {
+        var enabled = configuration.GetValue("NOTIFICATION_HUB_ENABLED", defaultValue: false);
+        if (!enabled)
+        {
+            services.AddSingleton<INotificationPublisher, NoOpNotificationPublisher>();
+            return;
+        }
+
+        var baseUrl = configuration.GetValue<string>("NOTIFICATION_HUB_URL")
+            ?? throw new InvalidOperationException(
+                "NOTIFICATION_HUB_URL is required when NOTIFICATION_HUB_ENABLED=true.");
+
+        services
+            .AddHttpClient<INotificationPublisher, NotificationHubClient>(client =>
+            {
+                client.BaseAddress = new Uri(baseUrl);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
+            .AddResilienceHandler("notification-hub", ConfigureEcosystemResilience);
+    }
+
+    /// <summary>
+    /// Wires the Workflow Engine client (PRD §5.6d). Identical gating contract to the other ecosystem
+    /// services. When disabled, <c>NoOpWorkflowTrigger</c> quietly returns <c>false</c> so call sites
+    /// don't need to branch on the flag themselves.
+    /// </summary>
+    private static void AddWorkflowEngine(IServiceCollection services, IConfiguration configuration)
+    {
+        var enabled = configuration.GetValue("WORKFLOW_ENGINE_ENABLED", defaultValue: false);
+        if (!enabled)
+        {
+            services.AddSingleton<IWorkflowTrigger, NoOpWorkflowTrigger>();
+            return;
+        }
+
+        var baseUrl = configuration.GetValue<string>("WORKFLOW_ENGINE_URL")
+            ?? throw new InvalidOperationException(
+                "WORKFLOW_ENGINE_URL is required when WORKFLOW_ENGINE_ENABLED=true.");
+
+        services
+            .AddHttpClient<IWorkflowTrigger, WorkflowEngineClient>(client =>
+            {
+                client.BaseAddress = new Uri(baseUrl);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
+            .AddResilienceHandler("workflow-engine", ConfigureEcosystemResilience);
+    }
+
+    /// <summary>
+    /// Wires the Invoice Reconciliation client (PRD §5.6e). Like the other ecosystem clients, but
+    /// calls carry a per-request <c>X-Tenant-API-Key</c> header sourced from the tenant that owns the
+    /// obligation — see <c>InvoiceReconClient</c> for the full request shape.
+    /// </summary>
+    private static void AddInvoiceRecon(IServiceCollection services, IConfiguration configuration)
+    {
+        var enabled = configuration.GetValue("INVOICE_RECON_ENABLED", defaultValue: false);
+        if (!enabled)
+        {
+            services.AddSingleton<IInvoiceReconClient, NoOpInvoiceReconClient>();
+            return;
+        }
+
+        var baseUrl = configuration.GetValue<string>("INVOICE_RECON_URL")
+            ?? throw new InvalidOperationException(
+                "INVOICE_RECON_URL is required when INVOICE_RECON_ENABLED=true.");
+
+        services
+            .AddHttpClient<IInvoiceReconClient, InvoiceReconClient>(client =>
+            {
+                client.BaseAddress = new Uri(baseUrl);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
+            .AddResilienceHandler("invoice-recon", ConfigureEcosystemResilience);
+    }
+
+    /// <summary>
+    /// Wires the Compliance Ledger NATS publisher (PRD §5.6c). Swaps HTTP for NATS JetStream so the
+    /// resilience pipeline doesn't apply — the NATS client has its own reconnect loop. Singleton
+    /// lifetime because the underlying connection is long-lived and expensive to establish.
+    /// </summary>
+    private static void AddComplianceLedger(IServiceCollection services, IConfiguration configuration)
+    {
+        var enabled = configuration.GetValue("COMPLIANCE_LEDGER_ENABLED", defaultValue: false);
+        if (!enabled)
+        {
+            services.AddSingleton<IComplianceEventPublisher, NoOpCompliancePublisher>();
+            return;
+        }
+
+        var natsUrl = configuration.GetValue<string>("NATS_URL")
+            ?? throw new InvalidOperationException(
+                "NATS_URL is required when COMPLIANCE_LEDGER_ENABLED=true.");
+
+        // Singleton: the connection is expensive to establish and maintains its own reconnect loop.
+        // ComplianceLedgerNatsPublisher is IDisposable — the host disposes it during shutdown.
+        services.AddSingleton<IComplianceEventPublisher>(sp =>
+            new ComplianceLedgerNatsPublisher(
+                natsUrl,
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ComplianceLedgerNatsPublisher>>()));
+    }
+
+    /// <summary>
+    /// Shared resilience configuration for ecosystem HTTP clients — retry 3× exponential 1s → 3s → 9s
+    /// + circuit breaker opening after 5 consecutive failures, 30s break. Matches the RAG Platform
+    /// policy so operators have a single mental model for every outbound integration.
+    /// </summary>
+    private static void ConfigureEcosystemResilience(ResiliencePipelineBuilder<HttpResponseMessage> builder)
+    {
+        builder.AddRetry(new HttpRetryStrategyOptions
+        {
+            MaxRetryAttempts = 3,
+            Delay = TimeSpan.FromSeconds(1),
+            BackoffType = DelayBackoffType.Exponential,
+            UseJitter = false,
+        });
+
+        builder.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+        {
+            FailureRatio = 1.0,
+            MinimumThroughput = 5,
+            BreakDuration = TimeSpan.FromSeconds(30),
+            SamplingDuration = TimeSpan.FromSeconds(30),
+        });
     }
 
     private static string ResolveConnectionString(IConfiguration configuration)

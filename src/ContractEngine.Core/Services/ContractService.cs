@@ -1,9 +1,12 @@
 using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Enums;
 using ContractEngine.Core.Exceptions;
+using ContractEngine.Core.Integrations.Compliance;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContractEngine.Core.Services;
 
@@ -35,13 +38,17 @@ public sealed class ContractService
     private readonly CounterpartyService _counterpartyService;
     private readonly ITenantContext _tenantContext;
     private readonly ObligationService? _obligationService;
+    private readonly IComplianceEventPublisher _compliancePublisher;
+    private readonly ILogger<ContractService> _logger;
 
     public ContractService(
         IContractRepository repository,
         ICounterpartyRepository counterpartyRepository,
         CounterpartyService counterpartyService,
         ITenantContext tenantContext,
-        ObligationService? obligationService = null)
+        ObligationService? obligationService = null,
+        IComplianceEventPublisher? compliancePublisher = null,
+        ILogger<ContractService>? logger = null)
     {
         _repository = repository;
         _counterpartyRepository = counterpartyRepository;
@@ -51,6 +58,10 @@ public sealed class ContractService
         // archive cascade) can keep their four-arg constructor call-sites intact. Production DI
         // always resolves a non-null instance.
         _obligationService = obligationService;
+        // Compliance publisher is optional so legacy test ctors keep compiling; production DI
+        // resolves either the real NATS publisher or the no-op stub.
+        _compliancePublisher = compliancePublisher ?? new NullCompliancePublisher();
+        _logger = logger ?? NullLogger<ContractService>.Instance;
     }
 
     public async Task<Contract> CreateAsync(
@@ -277,6 +288,33 @@ public sealed class ContractService
         existing.Status = ContractStatus.Terminated;
         existing.UpdatedAt = DateTime.UtcNow;
         await _repository.UpdateAsync(existing, cancellationToken);
+
+        // Phase 3 — emit the <c>contract.terminated</c> compliance event after commit. The ledger
+        // is a trailing audit stream and failures MUST NOT roll back the termination.
+        try
+        {
+            var envelope = new ComplianceEventEnvelope(
+                EventType: "contract.terminated",
+                TenantId: existing.TenantId,
+                Timestamp: DateTimeOffset.UtcNow,
+                Payload: new
+                {
+                    contract_id = existing.Id,
+                    title = existing.Title,
+                    reason = reason.Trim(),
+                    termination_date = terminationDate,
+                });
+            await _compliancePublisher
+                .PublishAsync("contract.terminated", envelope, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Compliance Ledger publish of contract.terminated for {ContractId} failed",
+                existing.Id);
+        }
+
         return existing;
     }
 
@@ -386,6 +424,19 @@ public sealed class ContractService
             throw new UnauthorizedAccessException("API key required");
         }
         return _tenantContext.TenantId.Value;
+    }
+
+    /// <summary>
+    /// Fallback <see cref="IComplianceEventPublisher"/> used only when a legacy test ctor omits the
+    /// publisher. Mirrors <c>NoOpCompliancePublisher</c> semantics (returns false, never throws).
+    /// </summary>
+    private sealed class NullCompliancePublisher : IComplianceEventPublisher
+    {
+        public Task<bool> PublishAsync(
+            string subject,
+            ComplianceEventEnvelope envelope,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
     }
 }
 

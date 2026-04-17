@@ -1,8 +1,12 @@
 using ContractEngine.Core.Abstractions;
 using ContractEngine.Core.Enums;
+using ContractEngine.Core.Integrations.Compliance;
+using ContractEngine.Core.Integrations.InvoiceRecon;
 using ContractEngine.Core.Interfaces;
 using ContractEngine.Core.Models;
 using ContractEngine.Core.Pagination;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContractEngine.Core.Services;
 
@@ -43,19 +47,36 @@ public sealed partial class ObligationService
     private readonly IContractRepository _contractRepository;
     private readonly ObligationStateMachine _stateMachine;
     private readonly ITenantContext _tenantContext;
+    private readonly INotificationPublisher _notificationPublisher;
+    private readonly IComplianceEventPublisher _compliancePublisher;
+    private readonly IInvoiceReconClient _invoiceReconClient;
+    private readonly ITenantRepository? _tenantRepository;
+    private readonly ILogger<ObligationService> _logger;
 
     public ObligationService(
         IObligationRepository obligationRepository,
         IObligationEventRepository eventRepository,
         IContractRepository contractRepository,
         ObligationStateMachine stateMachine,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        INotificationPublisher? notificationPublisher = null,
+        IComplianceEventPublisher? compliancePublisher = null,
+        IInvoiceReconClient? invoiceReconClient = null,
+        ITenantRepository? tenantRepository = null,
+        ILogger<ObligationService>? logger = null)
     {
         _obligationRepository = obligationRepository;
         _eventRepository = eventRepository;
         _contractRepository = contractRepository;
         _stateMachine = stateMachine;
         _tenantContext = tenantContext;
+        // All Phase-3 ecosystem deps are optional so legacy test ctors keep compiling. Production
+        // DI always resolves real instances (or the no-op stubs from ServiceRegistration).
+        _notificationPublisher = notificationPublisher ?? new NullNotificationPublisher();
+        _compliancePublisher = compliancePublisher ?? new NullCompliancePublisher();
+        _invoiceReconClient = invoiceReconClient ?? new NullInvoiceReconClient();
+        _tenantRepository = tenantRepository;
+        _logger = logger ?? NullLogger<ObligationService>.Instance;
     }
 
     /// <summary>
@@ -215,6 +236,171 @@ public sealed partial class ObligationService
             // OneTime is filtered out by the caller; defensive fallback if that changes.
             _ => baseDate,
         };
+    }
+
+    /// <summary>
+    /// Emits Notification Hub + Compliance Ledger signals for an obligation transition.
+    /// Called from <c>TransitionAsync</c> AFTER the DB commit so a failed dispatch never rolls
+    /// back the status change. Internal exceptions are caught and logged — fire-and-forget per
+    /// PRD §5.6b/c.
+    /// </summary>
+    private async Task EmitTransitionSideEffectsAsync(
+        Obligation obligation,
+        ObligationStatus fromStatus,
+        ObligationStatus toStatus,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        // Notification Hub — escalate + overdue get a dedicated template.
+        var notifyEventType = toStatus switch
+        {
+            ObligationStatus.Overdue => "obligation.overdue",
+            ObligationStatus.Escalated => "obligation.escalated",
+            _ => null,
+        };
+
+        if (notifyEventType is not null)
+        {
+            try
+            {
+                var payload = new
+                {
+                    tenant_id = tenantId,
+                    obligation_id = obligation.Id,
+                    contract_id = obligation.ContractId,
+                    title = obligation.Title,
+                    from_status = EnumToSnake(fromStatus.ToString()),
+                    to_status = EnumToSnake(toStatus.ToString()),
+                    next_due_date = obligation.NextDueDate,
+                    amount = obligation.Amount,
+                    currency = obligation.Currency,
+                };
+                await _notificationPublisher
+                    .PublishEventAsync(notifyEventType, payload, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Notification Hub dispatch of {EventType} for obligation {ObligationId} failed",
+                    notifyEventType,
+                    obligation.Id);
+            }
+        }
+
+        // Compliance Ledger — obligation breach = overdue or escalated.
+        if (toStatus is ObligationStatus.Overdue or ObligationStatus.Escalated)
+        {
+            try
+            {
+                var envelope = new ComplianceEventEnvelope(
+                    EventType: "contract.obligation.breached",
+                    TenantId: tenantId,
+                    Timestamp: DateTimeOffset.UtcNow,
+                    Payload: new
+                    {
+                        obligation_id = obligation.Id,
+                        contract_id = obligation.ContractId,
+                        title = obligation.Title,
+                        from_status = EnumToSnake(fromStatus.ToString()),
+                        to_status = EnumToSnake(toStatus.ToString()),
+                        amount = obligation.Amount,
+                        currency = obligation.Currency,
+                    });
+                await _compliancePublisher
+                    .PublishAsync("contract.obligation.breached", envelope, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Compliance Ledger publish of obligation.breached for {ObligationId} failed",
+                    obligation.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Emits a purchase-order creation to the Invoice Recon engine when an obligation of type
+    /// <see cref="ObligationType.Payment"/> is confirmed. No-op for non-payment obligations.
+    /// Failures are caught + logged — the confirmation itself has already committed.
+    /// </summary>
+    private async Task EmitInvoiceReconAsync(
+        Obligation obligation,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        if (obligation.ObligationType != ObligationType.Payment)
+        {
+            return;
+        }
+
+        // Need the tenant's API key to forward as X-Tenant-API-Key. Without it the real recon
+        // client would reject the call, so we skip cleanly — the integration treats missing
+        // credentials as "not enabled" rather than an error.
+        if (_tenantRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var tenant = await _tenantRepository
+                .GetByIdAsync(tenantId, cancellationToken)
+                .ConfigureAwait(false);
+            // ApiKeyHash is stored, not the plaintext — forwarding the hash lets the recon engine
+            // verify the tenant without the plaintext key ever leaving the Contract Engine.
+            var tenantKey = tenant?.ApiKeyHash;
+            if (string.IsNullOrWhiteSpace(tenantKey))
+            {
+                return;
+            }
+
+            var request = new PurchaseOrderRequest(
+                ContractId: obligation.ContractId,
+                ObligationId: obligation.Id,
+                Amount: obligation.Amount ?? 0m,
+                Currency: obligation.Currency ?? "USD",
+                DueDate: obligation.NextDueDate ?? obligation.DeadlineDate ?? DateOnly.FromDateTime(DateTime.UtcNow),
+                Counterparty: null,
+                Description: obligation.Title);
+            await _invoiceReconClient
+                .CreatePurchaseOrderAsync(tenantKey, request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Invoice Recon PO create for confirmed obligation {ObligationId} failed",
+                obligation.Id);
+        }
+    }
+
+    private sealed class NullNotificationPublisher : INotificationPublisher
+    {
+        public Task<Integrations.Notifications.NotificationDispatchResult> PublishEventAsync(
+            string eventType,
+            object payload,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new Integrations.Notifications.NotificationDispatchResult(Dispatched: false));
+    }
+
+    private sealed class NullCompliancePublisher : IComplianceEventPublisher
+    {
+        public Task<bool> PublishAsync(
+            string subject,
+            ComplianceEventEnvelope envelope,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+    }
+
+    private sealed class NullInvoiceReconClient : IInvoiceReconClient
+    {
+        public Task<PurchaseOrderResult> CreatePurchaseOrderAsync(
+            string tenantApiKey,
+            PurchaseOrderRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PurchaseOrderResult(Created: false));
     }
 
     private static string EnumToSnake(string value)
