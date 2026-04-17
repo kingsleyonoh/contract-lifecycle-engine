@@ -4,6 +4,7 @@ using ContractEngine.Infrastructure.Data;
 using ContractEngine.Infrastructure.Jobs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Quartz;
 
 namespace ContractEngine.Jobs;
@@ -39,6 +40,10 @@ public static class ServiceRegistration
         services.AddScoped<IDeadlineScanStore, DeadlineScanStore>();
         services.AddSingleton<IDeadlineAlertWriter, DeadlineAlertWriter>();
 
+        // Auto-renewal and stale-obligation stores — scoped (hold DbContext references).
+        services.AddScoped<IAutoRenewalStore, AutoRenewalStore>();
+        services.AddScoped<IStaleObligationStore, StaleObligationStore>();
+
         // Scanner config from env vars (ALERT_WINDOWS_DAYS, OVERDUE_ESCALATION_DAYS). Singleton —
         // the value is re-read on each job fire for DateOnly.Today anyway.
         services.AddSingleton(sp => BuildScannerConfig(configuration));
@@ -71,6 +76,26 @@ public static class ServiceRegistration
                 .WithIdentity($"{nameof(ExtractionProcessorJob)}-trigger")
                 // Every 5 minutes (PRD §7). Quartz 7-field cron with seconds.
                 .WithCronSchedule("0 */5 * * * ?"));
+
+            var renewalKey = new JobKey(nameof(AutoRenewalMonitorJob));
+            q.AddJob<AutoRenewalMonitorJob>(j => j
+                .WithIdentity(renewalKey)
+                .DisallowConcurrentExecution());
+            q.AddTrigger(t => t
+                .ForJob(renewalKey)
+                .WithIdentity($"{nameof(AutoRenewalMonitorJob)}-trigger")
+                // Daily at 6 AM UTC (PRD §7). Quartz 7-field cron with seconds.
+                .WithCronSchedule("0 0 6 * * ?"));
+
+            var staleKey = new JobKey(nameof(StaleObligationCheckerJob));
+            q.AddJob<StaleObligationCheckerJob>(j => j
+                .WithIdentity(staleKey)
+                .DisallowConcurrentExecution());
+            q.AddTrigger(t => t
+                .ForJob(staleKey)
+                .WithIdentity($"{nameof(StaleObligationCheckerJob)}-trigger")
+                // Mondays at 9 AM UTC (PRD §7). Quartz 7-field cron with seconds.
+                .WithCronSchedule("0 0 9 ? * MON"));
         });
 
         services.AddQuartzHostedService(opt =>

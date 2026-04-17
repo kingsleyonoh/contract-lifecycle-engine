@@ -25,6 +25,9 @@ public static class ContractVersionEndpoints
         builder.MapGet("/api/contracts/{id:guid}/versions", ListAsync)
             .RequireRateLimiting(RateLimitPolicies.Read100);
 
+        builder.MapGet("/api/contracts/{id:guid}/versions/{versionNumber:int}/diff", DiffAsync)
+            .RequireRateLimiting(RateLimitPolicies.Write20);
+
         return builder;
     }
 
@@ -82,6 +85,48 @@ public static class ContractVersionEndpoints
         var mappedItems = page.Data.Select(MapToResponse).ToList();
         var mappedPage = new PagedResult<ContractVersionResponse>(mappedItems, page.Pagination);
         return Results.Ok(ContractVersionListResponse.FromPagedResult(mappedPage));
+    }
+
+    private static async Task<IResult> DiffAsync(
+        Guid id,
+        int versionNumber,
+        ContractDiffService diffService,
+        ContractService contractService,
+        ITenantContext tenantContext,
+        int? compare_to,
+        CancellationToken cancellationToken)
+    {
+        RequireResolvedTenant(tenantContext);
+
+        // Verify the contract exists for this tenant
+        var contract = await contractService.GetByIdAsync(id, cancellationToken);
+        if (contract is null)
+        {
+            throw new KeyNotFoundException($"contract {id} not found for this tenant");
+        }
+
+        var compareTo = compare_to ?? (versionNumber - 1);
+        if (compareTo < 1)
+        {
+            throw new InvalidOperationException(
+                "No previous version to compare against. Specify compare_to parameter.");
+        }
+
+        var result = await diffService.DiffVersionsAsync(id, compareTo, versionNumber, cancellationToken);
+
+        if (!result.Success)
+        {
+            throw new InvalidOperationException(
+                result.ErrorMessage ?? "Contract diff failed");
+        }
+
+        return Results.Ok(new
+        {
+            contract_id = id,
+            version_a = result.VersionA,
+            version_b = result.VersionB,
+            diff_result = result.DiffData,
+        });
     }
 
     private static void RequireResolvedTenant(ITenantContext tenantContext)

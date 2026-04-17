@@ -108,6 +108,10 @@ public static class ServiceRegistration
         // Extraction service (Batch 021) — orchestrates the RAG extraction pipeline.
         services.AddScoped<ExtractionService>();
 
+        // Contract analysis (Batch 022) — diff and conflict detection via RAG.
+        services.AddScoped<ContractDiffService>();
+        services.AddScoped<ConflictDetectionService>();
+
         // RAG Platform integration (Batch 019) — feature-flagged per PRD §5.6a.
         // ENABLED=true  → typed HttpClient with retry + circuit breaker resilience pipeline.
         // ENABLED=false → NoOp stub; reads return empty, writes throw (see NoOpRagPlatformClient).

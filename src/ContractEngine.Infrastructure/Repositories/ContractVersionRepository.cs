@@ -55,4 +55,21 @@ public sealed class ContractVersionRepository : IContractVersionRepository
             .MaxAsync(cancellationToken);
         return (highest ?? 0) + 1;
     }
+
+    public Task<ContractVersion?> GetByVersionNumberAsync(
+        Guid contractId,
+        int versionNumber,
+        CancellationToken cancellationToken = default)
+    {
+        return _db.ContractVersions
+            .FirstOrDefaultAsync(
+                v => v.ContractId == contractId && v.VersionNumber == versionNumber,
+                cancellationToken);
+    }
+
+    public async Task UpdateAsync(ContractVersion version, CancellationToken cancellationToken = default)
+    {
+        _db.ContractVersions.Update(version);
+        await _db.SaveChangesAsync(cancellationToken);
+    }
 }
