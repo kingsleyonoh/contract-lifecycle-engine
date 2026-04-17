@@ -82,6 +82,31 @@ public class RequestLoggingMiddlewareTests : IClassFixture<RequestLoggingTestFac
 
         loggedRequestId.Should().Be(traceId, "the request_id in logs must equal HttpContext.TraceIdentifier");
     }
+
+    /// <summary>
+    /// PRD §9 + §10b: the <c>module</c> enricher must derive from the URL structure:
+    /// <c>/api/&lt;module&gt;/...</c> → <c>&lt;module&gt;</c>; non-API paths → first segment;
+    /// root / empty → <c>"http"</c>. Pins the behavior before Batch 025 observability work.
+    /// </summary>
+    [Theory]
+    [InlineData("/api/contracts/abc-123", "contracts")]
+    [InlineData("/api/webhooks/contract-signed", "webhooks")]
+    [InlineData("/api/obligations", "obligations")]
+    [InlineData("/health", "health")]
+    [InlineData("/", "http")]
+    public async Task Module_Property_IsDerivedFromPathShape(string path, string expectedModule)
+    {
+        InMemoryLogSink.Instance.Clear();
+        using var client = _factory.CreateClient();
+
+        // We send to /__tests__/logged but we'll invoke a route with the given shape below.
+        // For the real test factory, only /__tests__/logged is mapped. Use the probe endpoint
+        // that echoes the derived module so we verify the DeriveModule helper directly.
+        var probe = await client.GetAsync($"/__tests__/module-probe?path={Uri.EscapeDataString(path)}");
+        probe.StatusCode.Should().Be(HttpStatusCode.OK, because: "the probe endpoint is always reachable");
+        var body = (await probe.Content.ReadAsStringAsync()).Trim('"');
+        body.Should().Be(expectedModule);
+    }
 }
 
 public class RequestLoggingTestFactory : WebApplicationFactory<Program>
@@ -119,6 +144,17 @@ public class RequestLoggingTestFactory : WebApplicationFactory<Program>
                 endpoints.MapGet("/__tests__/logged",
                     (Microsoft.AspNetCore.Http.HttpContext ctx) =>
                         Microsoft.AspNetCore.Http.Results.Ok(ctx.TraceIdentifier));
+
+                // Exposes RequestLoggingMiddleware.DeriveModule so the theory test can assert
+                // the enricher's URL → module derivation without reaching into a private helper.
+                endpoints.MapGet("/__tests__/module-probe",
+                    (Microsoft.AspNetCore.Http.HttpRequest req) =>
+                    {
+                        var probed = req.Query["path"].ToString();
+                        var module = RequestLoggingMiddleware.DeriveModule(
+                            new Microsoft.AspNetCore.Http.PathString(probed));
+                        return Microsoft.AspNetCore.Http.Results.Ok(module);
+                    });
             });
         });
 

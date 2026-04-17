@@ -59,7 +59,18 @@ public sealed class RequestLoggingMiddleware
         }
     }
 
-    private static string DeriveModule(PathString path)
+    /// <summary>
+    /// Derives the <c>module</c> log property from the request path. Exposed as <c>public static</c>
+    /// so tests can assert the derivation directly without round-tripping through a real request —
+    /// see <c>RequestLoggingMiddlewareTests.Module_Property_IsDerivedFromPathShape</c>.
+    ///
+    /// <list type="bullet">
+    /// <item><description><c>/api/{module}/...</c> → <c>{module}</c> lowercase</description></item>
+    /// <item><description>non-API paths (<c>/health</c>, <c>/metrics</c>, ...) → first segment lowercase</description></item>
+    /// <item><description>root <c>/</c> or empty → <c>"http"</c></description></item>
+    /// </list>
+    /// </summary>
+    public static string DeriveModule(PathString path)
     {
         if (!path.HasValue)
         {

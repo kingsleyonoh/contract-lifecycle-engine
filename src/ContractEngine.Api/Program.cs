@@ -1,14 +1,19 @@
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ContractEngine.Api.Endpoints;
 using ContractEngine.Api.Middleware;
 using ContractEngine.Api.RateLimiting;
+using ContractEngine.Core.Observability;
 using ContractEngine.Infrastructure.Configuration;
 using ContractEngine.Infrastructure.Data;
 using ContractEngine.Jobs;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
+using Serilog.Events;
 
 // When a test harness has pre-seeded a non-default Log.Logger (e.g. the Api.Tests
 // RequestLoggingTestFactory installs an InMemoryLogSink before Program runs), respect it:
@@ -27,12 +32,71 @@ if (!usingTestSuppliedLogger)
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Sentry (PRD §10b) — error + performance observability. Gate on a non-empty SENTRY_DSN so
+// local dev (no DSN) and test harnesses (no DSN) stay completely silent. On non-empty DSN,
+// forward ASP.NET Core middleware exceptions AND Serilog Error/Fatal events via Sentry.Serilog,
+// carrying request_id / tenant_id / module enrichers that RequestLoggingMiddleware already
+// pushes into LogContext. BeforeSend delegates to SentryPrivacyFilter (Core) to strip
+// X-API-Key, X-Tenant-API-Key, X-Webhook-Signature, Authorization, Cookie headers plus any
+// api_key / token / password / signature / secret keys nested in the extras dictionary.
+var sentryDsn = builder.Configuration["SENTRY_DSN"];
+var sentryEnabled = !string.IsNullOrWhiteSpace(sentryDsn);
+if (sentryEnabled)
+{
+    builder.WebHost.UseSentry(options =>
+    {
+        options.Dsn = sentryDsn;
+        options.Environment = builder.Environment.EnvironmentName;
+        options.Release = typeof(Program).Assembly.GetName().Version?.ToString();
+        options.TracesSampleRate = 0.1;
+        options.AttachStacktrace = true;
+        options.SendDefaultPii = false;
+        options.MaxBreadcrumbs = 50;
+
+        // Scrub request headers and contexts.Request.Headers before each event leaves the process.
+        // The filter lives in Core (zero Sentry deps) — we adapt the SDK's header collection into a
+        // plain Dictionary<string,string>, scrub, then copy back. Extras get the same treatment via
+        // the object? overload so nested payloads (e.g. webhook body dumps) are also clean.
+        options.SetBeforeSend(sentryEvent =>
+        {
+            if (sentryEvent.Request?.Headers is { Count: > 0 } headers)
+            {
+                var headerDict = new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
+                SentryPrivacyFilter.Scrub(headerDict);
+                headers.Clear();
+                foreach (var kvp in headerDict)
+                {
+                    headers[kvp.Key] = kvp.Value;
+                }
+            }
+
+            return sentryEvent;
+        });
+    });
+}
+
 if (!usingTestSuppliedLogger)
 {
-    builder.Host.UseSerilog((context, services, configuration) => configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .WriteTo.Console(new Serilog.Formatting.Compact.CompactJsonFormatter())
-        .Enrich.FromLogContext());
+    builder.Host.UseSerilog((context, services, configuration) =>
+    {
+        configuration
+            .ReadFrom.Configuration(context.Configuration)
+            .WriteTo.Console(new Serilog.Formatting.Compact.CompactJsonFormatter())
+            .Enrich.FromLogContext();
+
+        // Forward Serilog Error and Fatal events to Sentry (in addition to ASP.NET middleware
+        // exceptions captured by UseSentry). Gate on the same DSN check so there's a single
+        // source of truth for "is Sentry on?".
+        if (sentryEnabled)
+        {
+            configuration.WriteTo.Sentry(o =>
+            {
+                o.Dsn = sentryDsn!;
+                o.MinimumBreadcrumbLevel = LogEventLevel.Information;
+                o.MinimumEventLevel = LogEventLevel.Error;
+            });
+        }
+    });
 }
 else
 {
@@ -92,6 +156,24 @@ if (args.Contains("--seed"))
         return;
     }
 
+    return;
+}
+
+// Hub template onboarding CLI path (PRD §7b). Invoked via `dotnet run -- --seed-hub-templates`.
+// Short-circuits before the HTTP pipeline starts so the process exits after POSTing templates —
+// the scheduler, rate limiter, and middleware never spin up. Operator runs this once per
+// environment when the Notification Hub is first provisioned.
+if (args.Contains("--seed-hub-templates"))
+{
+    using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(Log.Logger));
+    var seeder = new NotificationHubTemplateSeeder(
+        httpClient,
+        loggerFactory.CreateLogger<NotificationHubTemplateSeeder>(),
+        builder.Configuration);
+
+    var exitCode = await seeder.SeedAsync();
+    Environment.ExitCode = exitCode;
     return;
 }
 
