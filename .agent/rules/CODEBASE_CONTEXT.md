@@ -1,8 +1,8 @@
 # Contract Lifecycle Engine — Codebase Context
 
-> Last updated: 2026-04-16 (Phase 1 close)
-> Template synced: 2026-04-15
-> Status: **Phase 1 complete — 53/53 items shipped. Phase 2 (AI Extraction) is next.**
+> Last updated: 2026-04-17 (Phase 2 close)
+> Template synced: 2026-04-17
+> Status: **Phase 2 complete — 14/14 items shipped. Phase 3 (Ecosystem Integration & Deployment) is next.**
 
 ## Local Dev Setup (Workstation Bootstrapping)
 
@@ -40,37 +40,45 @@ The `.env` file is git-ignored — never commit real values.
 contract-lifecycle-engine/
 ├── src/
 │   ├── ContractEngine.Api/          # ASP.NET Core host — endpoints, middleware, DI
-│   │   ├── Endpoints/               # 10 endpoint groups: Tenants, Counterparties, Contracts,
+│   │   ├── Endpoints/               # 11 endpoint groups: Tenants, Counterparties, Contracts,
 │   │   │                             #   ContractDocuments, ContractTags, ContractVersions,
-│   │   │                             #   Obligations, Alerts, Analytics, Health
+│   │   │                             #   Obligations, Alerts, Extraction, Analytics, Health
 │   │   ├── Endpoints/Dto/           # Request / response DTOs
 │   │   ├── Middleware/              # ExceptionHandling, RequestLogging, TenantResolution
 │   │   ├── RateLimiting/            # Rate-limit policies + configuration
 │   │   └── Program.cs              # Entry point, DI registration, --seed CLI, AUTO_MIGRATE
 │   ├── ContractEngine.Core/         # Domain logic — zero external dependencies
 │   │   ├── Abstractions/            # ITenantContext, ITenantScoped, NullTenantContext
-│   │   ├── Models/                  # 10 EF Core entities (Tenant, Counterparty, Contract,
+│   │   ├── Models/                  # 12 EF Core entities (Tenant, Counterparty, Contract,
 │   │   │                             #   ContractDocument, ContractTag, ContractVersion,
-│   │   │                             #   Obligation, ObligationEvent, DeadlineAlert, HolidayCalendar)
-│   │   ├── Enums/                   # 9 enums (ContractStatus/Type, 5 Obligation enums, AlertType,
-│   │   │                             #   DisputeResolution)
+│   │   │                             #   Obligation, ObligationEvent, DeadlineAlert, HolidayCalendar,
+│   │   │                             #   ExtractionPrompt, ExtractionJob)
+│   │   ├── Enums/                   # 10 enums (ContractStatus/Type, 5 Obligation enums, AlertType,
+│   │   │                             #   DisputeResolution, ExtractionStatus)
 │   │   ├── Exceptions/              # EntityTransitionException + Contract/Obligation subclasses
 │   │   ├── Interfaces/              # Repository + client abstractions
-│   │   ├── Services/                # Business logic, state machine, scanner core, analytics
+│   │   ├── Defaults/               # ExtractionDefaults (hardcoded prompt templates)
+│   │   ├── Integrations/Rag/       # RAG Platform DTOs (RagDocument, RagSearchResult, RagChatResult, RagEntity, RagPlatformException)
+│   │   ├── Services/                # Business logic, state machine, scanner core, analytics, extraction, diff, conflict detection
 │   │   ├── Pagination/              # PaginationCursor, PageRequest, PagedResult<T>, IHasCursor
 │   │   └── Validation/              # FluentValidation validators
-│   ├── ContractEngine.Infrastructure/ # External concerns — DB, storage, tenancy, analytics
+│   ├── ContractEngine.Infrastructure/ # External concerns — DB, storage, tenancy, analytics, RAG client
 │   │   ├── Data/                    # ContractDbContext, migrations, FirstRunSeeder, HolidayCalendarSeeder
-│   │   ├── Data/Migrations/         # 8 EF Core migrations (tenants → deadline_alerts)
+│   │   ├── Data/Migrations/         # 9 EF Core migrations (tenants → extraction_prompts_and_jobs)
 │   │   ├── Repositories/            # EF Core repository implementations
 │   │   ├── Storage/                 # LocalDocumentStorage
 │   │   ├── Tenancy/                 # TenantContextAccessor (scoped ITenantContext writer)
 │   │   ├── Analytics/               # EfAnalyticsQueryContext
-│   │   ├── Jobs/                    # DeadlineScanStore, DeadlineAlertWriter
+│   │   ├── External/                # RagPlatformClient (typed HttpClient + resilience)
+│   │   ├── Stubs/                  # NoOpRagPlatformClient (when RAG_PLATFORM_ENABLED=false)
+│   │   ├── Jobs/                    # DeadlineScanStore, DeadlineAlertWriter, AutoRenewalStore, StaleObligationStore
 │   │   ├── Pagination/              # CursorPaginationExtensions
 │   │   └── Configuration/           # ServiceRegistration.cs (DI)
 │   └── ContractEngine.Jobs/         # Quartz.NET background jobs
 │       ├── DeadlineScannerJob.cs    # Hourly scanner (cron 0 0 * * * ?)
+│       ├── ExtractionProcessorJob.cs # Every 5 min extraction processor (cron 0 */5 * * * ?)
+│       ├── AutoRenewalMonitorJob.cs # Daily auto-renewal (cron 0 0 6 * * ?)
+│       ├── StaleObligationCheckerJob.cs # Weekly stale check (cron 0 0 9 ? * MON)
 │       └── ServiceRegistration.cs   # Quartz DI, JOBS_ENABLED gate
 ├── tests/
 │   ├── ContractEngine.Core.Tests/          # Unit tests — domain logic (250 tests)
@@ -89,7 +97,7 @@ contract-lifecycle-engine/
 └── .env.example                      # Committed env var catalogue
 ```
 
-**Test totals (Phase 1 close): 566 passing (554 non-E2E + 12 E2E).**
+**Test totals (Phase 2 close): ~660+ passing.**
 
 ## Key Modules
 
@@ -106,11 +114,13 @@ contract-lifecycle-engine/
 | Deadline Scanner | Hourly Quartz job — auto-transition + alerts | `src/ContractEngine.Core/Services/DeadlineScannerCore.cs`, `Jobs/DeadlineScannerJob.cs` |
 | Analytics | Dashboard + 3 aggregations (by type, value, calendar) | `src/ContractEngine.Core/Services/AnalyticsService.cs` |
 | Health | ASP.NET + DB + integration readiness probes | `src/ContractEngine.Api/Endpoints/HealthEndpoints.cs` |
-| Extraction Pipeline | AI-powered obligation extraction via RAG Platform | **Phase 2** (`src/ContractEngine.Core/Services/ExtractionService.cs`) |
-| Contract Analysis | Semantic diff, cross-contract conflict detection | **Phase 2** (`src/ContractEngine.Core/Services/ContractDiffService.cs`) |
+| Extraction Pipeline | AI-powered obligation extraction via RAG Platform | `src/ContractEngine.Core/Services/ExtractionService.cs`, `Jobs/ExtractionProcessorJob.cs` |
+| Contract Analysis | Semantic diff, cross-contract conflict detection | `src/ContractEngine.Core/Services/ContractDiffService.cs`, `ConflictDetectionService.cs` |
+| Auto-Renewal Monitor | Daily scan for expiring auto-renewal contracts | `src/ContractEngine.Core/Services/AutoRenewalMonitorCore.cs`, `Jobs/AutoRenewalMonitorJob.cs` |
+| Stale Obligation Checker | Weekly scan for stale obligations the scanner missed | `src/ContractEngine.Core/Services/StaleObligationCheckerCore.cs`, `Jobs/StaleObligationCheckerJob.cs` |
 | Ecosystem Integration | HTTP clients + NATS publisher for 6 ecosystem services | **Phase 3** (`src/ContractEngine.Infrastructure/External/`) |
 
-## Database Schema (Phase 1 — 10 tables, 8 migrations applied)
+## Database Schema (Phase 2 — 12 tables, 9 migrations applied)
 
 | Table | Migration | Purpose | Key Columns / Constraints |
 |-------|-----------|---------|---------------------------|
@@ -125,7 +135,8 @@ contract-lifecycle-engine/
 | holiday_calendars | 20260416141645_AddHolidayCalendarsTable | Business day calendar data (US/DE/UK/NL + tenant custom) | `id`, `tenant_id` (NULLABLE — null = system-wide), `calendar_code`, `holiday_date`, `holiday_name`, `year`, `created_at`. UNIQUE `(tenant_id, calendar_code, holiday_date)` WITH `NULLS NOT DISTINCT` (Postgres 15+). Indexes `(calendar_code, year, holiday_date)`, `(tenant_id, calendar_code)`. |
 | deadline_alerts | 20260416143626_AddDeadlineAlertsTable | Proactive deadline and expiry alerts | `id`, `tenant_id`, `obligation_id` FK (Restrict), `contract_id` FK (Restrict), `alert_type`, `days_remaining`, `message`, `acknowledged`, `acknowledged_at`, `acknowledged_by`, `notification_sent`, `created_at`. Idempotency key `(obligation_id, alert_type, days_remaining)` enforced at the service layer. Indexes `(tenant_id, acknowledged, created_at DESC)`, `(tenant_id, obligation_id)`. |
 
-**Phase 2 tables (planned):** `extraction_jobs`, `extraction_prompts` (both tenant-scoped; `extraction_jobs` gets indexes `(tenant_id, status)` + `(tenant_id, contract_id)`).
+| extraction_prompts | 20260417070833_AddExtractionPromptsAndJobsTables | Configurable extraction prompts per tenant/system-wide | `id`, `tenant_id` (NULLABLE — null = system-default), `prompt_type`, `prompt_text`, `response_schema jsonb`, `is_active`, `created_at`, `updated_at`. UNIQUE `(tenant_id, prompt_type)` NULLS NOT DISTINCT. NOT `ITenantScoped` (null rows are system-wide; repo handles isolation). |
+| extraction_jobs | 20260417070833_AddExtractionPromptsAndJobsTables | AI extraction job tracking | `id`, `tenant_id`, `contract_id` FK (Restrict), `document_id` (nullable), `status`, `prompt_types text[]`, `obligations_found`, `obligations_confirmed`, `error_message`, `rag_document_id`, `raw_responses jsonb`, `started_at`, `completed_at`, `created_at`, `retry_count`. Indexes `(tenant_id, status)`, `(tenant_id, contract_id)`. |
 
 ## External Integrations
 
@@ -387,7 +398,25 @@ Single sink: stdout, JSON formatter (`CompactJsonFormatter`). Configured at star
 | First-run seeder | `src/ContractEngine.Infrastructure/Data/FirstRunSeeder.cs` | present | PRD §11. Idempotent: skip if any tenant exists. Invoked from `Program.cs` on `--seed` CLI AND on `AUTO_SEED=true` first boot. Calls `TenantService.RegisterAsync` + `HolidayCalendarSeeder.SeedAsync`, returns plaintext API key once. |
 | Analytics | `src/ContractEngine.Core/Services/AnalyticsService.cs`, `Interfaces/IAnalyticsQueryContext.cs` + `Infrastructure/Analytics/EfAnalyticsQueryContext.cs`, `Api/Endpoints/AnalyticsEndpoints.cs` | present | Dashboard + 3 aggregations at `write-50` rate limit (queries are read-only but hit multiple tables; PRD explicitly caps them). Decimals serialise as canonical `"N.NN"` strings. `deadline-calendar` hard-caps at 365 days + 1000 rows. |
 | Health endpoints | `src/ContractEngine.Api/Endpoints/HealthEndpoints.cs` + `Endpoints/Dto/HealthResponses.cs` | present | `/health`, `/health/db` (runs `SELECT 1`), `/health/ready` (aggregates DB + 6 integration flags). All public, no rate limit. |
-| App entry point | `src/ContractEngine.Api/Program.cs` | present | Minimal API host. Serilog bootstrap with test-supplied logger detection. `--seed` CLI short-circuit. `AUTO_MIGRATE` (default true) runs `Database.MigrateAsync()` before pipeline starts; `Testing` environment short-circuits. `AUTO_SEED` (default true) populates holiday calendars + first-run tenant. Middleware order: ExceptionHandling → RequestLogging → TenantResolution → RateLimiter → routes. Registers 10 endpoint groups. JSON enum policy = `SnakeCaseLower`. |
+| App entry point | `src/ContractEngine.Api/Program.cs` | present | Minimal API host. Serilog bootstrap with test-supplied logger detection. `--seed` CLI short-circuit. `AUTO_MIGRATE` (default true) runs `Database.MigrateAsync()` before pipeline starts; `Testing` environment short-circuits. `AUTO_SEED` (default true) populates holiday calendars + first-run tenant. Middleware order: ExceptionHandling → RequestLogging → TenantResolution → RateLimiter → routes. Registers 11 endpoint groups. JSON enum policy = `SnakeCaseLower`. |
+| IRagPlatformClient | `src/ContractEngine.Core/Interfaces/IRagPlatformClient.cs` | present | **Batch 019.** PRD §5.6a. Four methods: `UploadDocumentAsync`, `SearchAsync`, `ChatSyncAsync`, `GetEntitiesAsync`. Return-shape policy for the no-op is part of the interface contract: reads return empty, writes throw — writes must fail loudly so extraction pipelines don't silently skip work. |
+| RAG DTOs | `src/ContractEngine.Core/Integrations/Rag/RagDocument.cs`, `RagSearchResult.cs`, `RagChatResult.cs`, `RagEntity.cs`, `RagPlatformException.cs` | present | **Batch 019.** Pure records mirroring the RAG Platform JSON contract. `RagPlatformException` carries upstream status code + best-effort response body; raised by the real client on non-success HTTP and by the resilience pipeline after retries exhaust. |
+| RagPlatformClient | `src/ContractEngine.Infrastructure/External/RagPlatformClient.cs` | present | **Batch 019.** Typed `HttpClient` constructed via `IHttpClientFactory`. Per-request `X-API-Key` header from `RAG_PLATFORM_API_KEY`. Snake-case JSON (`JsonNamingPolicy.SnakeCaseLower`) on both wire sides. Private wire DTOs map into the Core records so the public contract stays decoupled from upstream schema drift. Non-success statuses → `RagPlatformException` with code + body. |
+| NoOpRagPlatformClient | `src/ContractEngine.Infrastructure/Stubs/NoOpRagPlatformClient.cs` | present | **Batch 019.** Registered when `RAG_PLATFORM_ENABLED=false` (the default). `SearchAsync` / `GetEntitiesAsync` return empty; `UploadDocumentAsync` / `ChatSyncAsync` throw `InvalidOperationException("RAG Platform is disabled (RAG_PLATFORM_ENABLED=false)")`. The throw/return split is deliberate — see interface docs. |
+| RAG DI registration | `src/ContractEngine.Infrastructure/Configuration/ServiceRegistration.cs` (`AddRagPlatformClient`) | present | **Batch 019.** Reads `RAG_PLATFORM_ENABLED` (default false). ENABLED=true branch: validates `RAG_PLATFORM_URL` (throws at DI build if missing), adds typed `HttpClient` with 30s timeout + `AddResilienceHandler("rag-platform")` pipeline: retry 3× exponential 1s → 3s → 9s + circuit breaker opening on 5 consecutive failures, 30s break. ENABLED=false branch: registers the NoOp singleton. |
+| ExtractionPrompt entity | `src/ContractEngine.Core/Models/ExtractionPrompt.cs` | present | **Batch 020.** PRD §4.11. NOT `ITenantScoped` (nullable tenant_id — system-default rows must be visible). UNIQUE `(tenant_id, prompt_type)` NULLS NOT DISTINCT. Repo handles isolation with explicit `WHERE tenant_id = @id OR tenant_id IS NULL`, prioritising tenant-specific over system-default. |
+| ExtractionJob entity | `src/ContractEngine.Core/Models/ExtractionJob.cs`, `Enums/ExtractionStatus.cs` | present | **Batch 020.** PRD §4.8. `ITenantScoped` + `IHasCursor`. Five-state lifecycle: Queued → Processing → Completed/Partial/Failed. `PromptTypes` stored as `TEXT[]` (Npgsql native), `RawResponses` as JSONB. |
+| ExtractionDefaults | `src/ContractEngine.Core/Defaults/ExtractionDefaults.cs` | present | **Batch 020.** Hardcoded extraction prompts for payment, renewal, compliance, performance. `AllPromptTypes` returns the canonical type list; `GetByType(promptType)` resolves default prompt text. |
+| ExtractionPromptRepository | `src/ContractEngine.Core/Interfaces/IExtractionPromptRepository.cs` + `Infrastructure/Repositories/ExtractionPromptRepository.cs` | present | **Batch 020.** `GetPromptAsync(tenantId, promptType)` resolves tenant-specific → system-default fallback. `ListByTenantAsync` returns active prompts. No global query filter (entity is not `ITenantScoped`). |
+| ExtractionJobRepository | `src/ContractEngine.Core/Interfaces/IExtractionJobRepository.cs` + `Infrastructure/Repositories/ExtractionJobRepository.cs` | present | **Batch 020.** `ListAsync(ExtractionJobFilters, PageRequest)` tenant-scoped via global query filter. `ListQueuedAsync(batchSize)` uses `IgnoreQueryFilters()` for the cross-tenant background processor. |
+| ExtractionService | `src/ContractEngine.Core/Services/ExtractionService.cs` | present | **Batch 021.** PRD §5.2. `TriggerExtractionAsync` validates contract + optional document, creates Queued job. `ExecuteExtractionAsync` (called by ExtractionProcessorJob) uploads to RAG, runs prompts, parses obligations (Pending status), stores raw_responses. `RetryExtractionAsync` resets Failed/Partial → Queued. |
+| ExtractionProcessorJob | `src/ContractEngine.Jobs/ExtractionProcessorJob.cs` | present | **Batch 021.** Every 5 min Quartz job. `ListQueuedAsync(batchSize)` cross-tenant, resolves each job's tenant via `TenantContextAccessor.Resolve(tenantId)` in a child DI scope, delegates to `ExtractionService.ExecuteExtractionAsync`. |
+| ExtractionEndpoints | `src/ContractEngine.Api/Endpoints/ExtractionEndpoints.cs` + DTOs | present | **Batch 021.** PRD §8b. `POST /api/contracts/{id}/extract` (write-10), `GET /api/extraction-jobs` (read-100), `GET /api/extraction-jobs/{id}` (read-100), `POST /api/extraction-jobs/{id}/retry` (write-10). All require resolved tenant. Detail endpoint exposes `raw_responses` (JSONB). |
+| ContractDiffService | `src/ContractEngine.Core/Services/ContractDiffService.cs` | present | **Batch 022.** PRD §5.5. Loads two versions, validates RAG docs exist, calls `ChatSyncAsync` with diff prompt, parses into JSONB, stores on newer version's `diff_result`. Returns `VersionDiffResult` envelope. |
+| ConflictDetectionService | `src/ContractEngine.Core/Services/ConflictDetectionService.cs` | present | **Batch 022.** PRD §5.5. On contract activation, queries up to 5 other active contracts with same counterparty, asks RAG to identify conflicting clauses. Returns `ConflictInfo` list. Silently returns empty when RAG is disabled. |
+| ContractVersionEndpoints (diff) | `src/ContractEngine.Api/Endpoints/ContractVersionEndpoints.cs` (DiffAsync) | present | **Batch 022.** `GET /api/contracts/{id}/versions/{v}/diff?compare_to=` (write-20). Validates contract exists, calls `ContractDiffService.DiffVersionsAsync`. Missing RAG docs → 409 CONFLICT via `InvalidOperationException`. |
+| AutoRenewalMonitorCore + Job | `src/ContractEngine.Core/Services/AutoRenewalMonitorCore.cs`, `Interfaces/IAutoRenewalStore.cs`, `Infrastructure/Jobs/AutoRenewalStore.cs`, `Jobs/AutoRenewalMonitorJob.cs` | present | **Batch 022.** PRD §7. Daily 6 AM UTC scan. Finds Expiring + auto_renewal=true contracts, transitions to Active with extended end_date, creates version + alert. |
+| StaleObligationCheckerCore + Job | `src/ContractEngine.Core/Services/StaleObligationCheckerCore.cs`, `Interfaces/IStaleObligationStore.cs`, `Infrastructure/Jobs/StaleObligationStore.cs`, `Jobs/StaleObligationCheckerJob.cs` | present | **Batch 022.** PRD §7. Weekly Monday 9 AM UTC data integrity sweep. Logs warnings for stale non-terminal obligations with past `next_due_date`. Conservative: no auto-transition. |
 | Local services | `docker-compose.yml` + `docker-compose.override.yml` | present | PostgreSQL 16 on host 5445, NATS 2 on host 4225 (profile `nats`) |
 | Production deployment | `docker-compose.prod.yml` + `Dockerfile` + `.dockerignore` | present | GHCR image `ghcr.io/kingsleyonoh/contract-lifecycle-engine:latest`, Caddy reverse proxy labels for `contracts.kingsleyonoh.com`, `documents` named volume persisted at `/app/data/documents`. Multi-stage Dockerfile (`sdk:8.0` build → `aspnet:8.0` runtime, 334 MB). `.dockerignore` excludes `tests/` + `bin/` + `obj/`. |
 | Environment catalogue | `.env.example` | present | Complete env var list (committed); `.env` = local values (git-ignored). Batch 018 added `AUTO_MIGRATE=true`. |
@@ -410,13 +439,19 @@ Single sink: stdout, JSON formatter (`CompactJsonFormatter`). Configured at star
 | Error envelope | `src/ContractEngine.Api/Middleware/ExceptionHandlingMiddleware.cs` |
 | Request logging | `src/ContractEngine.Api/Middleware/RequestLoggingMiddleware.cs` |
 | Cursor pagination | `src/ContractEngine.Infrastructure/Pagination/CursorPaginationExtensions.cs` |
-| RAG extraction | **Phase 2** — `src/ContractEngine.Core/Services/ExtractionService.cs` |
-| Ecosystem clients | **Phase 3** — `src/ContractEngine.Infrastructure/External/` |
-| No-op stubs | **Phase 3** — `src/ContractEngine.Infrastructure/Stubs/` |
-| Background jobs | `src/ContractEngine.Jobs/` |
-| DB schema/migrations | `src/ContractEngine.Infrastructure/Data/Migrations/` (8 migrations applied) |
-| Entity models | `src/ContractEngine.Core/Models/` (10 entities) |
-| API endpoints | `src/ContractEngine.Api/Endpoints/` (10 endpoint groups, ~35 endpoints) |
+| RAG Platform client | `src/ContractEngine.Core/Interfaces/IRagPlatformClient.cs` + `src/ContractEngine.Infrastructure/External/RagPlatformClient.cs` + `src/ContractEngine.Infrastructure/Stubs/NoOpRagPlatformClient.cs` |
+| RAG extraction | `src/ContractEngine.Core/Services/ExtractionService.cs` + `src/ContractEngine.Jobs/ExtractionProcessorJob.cs` |
+| Contract diff | `src/ContractEngine.Core/Services/ContractDiffService.cs` |
+| Conflict detection | `src/ContractEngine.Core/Services/ConflictDetectionService.cs` |
+| Auto-renewal monitor | `src/ContractEngine.Core/Services/AutoRenewalMonitorCore.cs` + `src/ContractEngine.Jobs/AutoRenewalMonitorJob.cs` |
+| Stale obligation checker | `src/ContractEngine.Core/Services/StaleObligationCheckerCore.cs` + `src/ContractEngine.Jobs/StaleObligationCheckerJob.cs` |
+| Extraction defaults | `src/ContractEngine.Core/Defaults/ExtractionDefaults.cs` |
+| Ecosystem clients | **Phase 3** — `src/ContractEngine.Infrastructure/External/` (except `RagPlatformClient` which is Phase 2) |
+| No-op stubs | `src/ContractEngine.Infrastructure/Stubs/NoOpRagPlatformClient.cs` (Phase 3 will add more) |
+| Background jobs | `src/ContractEngine.Jobs/` (4 jobs: DeadlineScanner, ExtractionProcessor, AutoRenewalMonitor, StaleObligationChecker) |
+| DB schema/migrations | `src/ContractEngine.Infrastructure/Data/Migrations/` (9 migrations applied) |
+| Entity models | `src/ContractEngine.Core/Models/` (12 entities) |
+| API endpoints | `src/ContractEngine.Api/Endpoints/` (11 endpoint groups, ~40 endpoints) |
 | App bootstrap | `src/ContractEngine.Api/Program.cs` |
 | Integration test pattern | `tests/ContractEngine.Integration.Tests/SmokeTests/PostgresConnectivityTests.cs`, `tests/ContractEngine.Integration.Tests/Data/ContractDbContextTests.cs` |
 | API middleware test pattern | `tests/ContractEngine.Api.Tests/Middleware/ExceptionHandlingMiddlewareTests.cs`, `RequestLoggingMiddlewareTests.cs`, `InMemoryLogSink.cs` |
