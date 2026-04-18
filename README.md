@@ -283,4 +283,6 @@ docker compose -f docker-compose.prod.yml up -d
 
 Set the environment variables listed in **Setup > Environment** before starting — `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, plus any `{SERVICE}_ENABLED=true` ecosystem flags you plan to switch on.
 
-<!-- THEATRE_LINK -->
+---
+
+Full case study, architectural breakdown, and engineering deep-dive at [kingsleyonoh.com/projects/contract-lifecycle-engine](https://www.kingsleyonoh.com/projects/contract-lifecycle-engine)
